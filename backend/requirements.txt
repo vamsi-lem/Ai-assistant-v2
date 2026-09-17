@@ -1,0 +1,24 @@
+# Backend dependencies.
+#
+# Floors rather than exact pins, because I could not install and test these in
+# the sandbox that wrote them. If a version ever breaks, pin it here and tell
+# me which one.
+
+fastapi>=0.115
+uvicorn[standard]>=0.32
+
+# pydantic[email] pulls email-validator, which EmailStr needs.
+pydantic[email]>=2.9
+python-dotenv>=1.0
+
+# Supabase Python client. We use create_async_client from this package, NOT the
+# abandoned third-party supabase-py-async on PyPI. Do not install that one.
+supabase>=2.31
+
+# Token minting and room management. This is the server SDK, a different
+# package from the `livekit` realtime SDK the agent uses.
+livekit-api>=1.2
+
+# Carrier SDK. Only imported when a call is actually placed, so the backend
+# starts fine without credentials.
+plivo>=4.60

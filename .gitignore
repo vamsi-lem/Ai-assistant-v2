@@ -1,0 +1,29 @@
+# secrets
+.env
+.env.local
+.env.*.local
+
+# node
+node_modules/
+dist/
+build/
+*.log
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# supabase local
+supabase/.branches/
+supabase/.temp/
+
+# editors and os
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

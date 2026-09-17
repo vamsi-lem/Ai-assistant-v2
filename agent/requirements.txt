@@ -1,0 +1,16 @@
+# Agent dependencies.
+#
+# The extras pull the plugins: sarvam gives STT, LLM and TTS; silero gives the
+# voice activity detector; turn-detector improves where one speaker stops and
+# the other starts.
+#
+# Plugin versions track livekit-agents exactly, so install them together via
+# the extras rather than pinning each one.
+#
+# Floors rather than exact pins, because PyPI was unreachable from the sandbox
+# that wrote this and nothing here could be installed or run. If a version
+# breaks, pin it and tell me which.
+
+livekit-agents[sarvam,silero,turn-detector]>=1.8
+aiohttp>=3.10
+python-dotenv>=1.0
