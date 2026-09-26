@@ -1,0 +1,24 @@
+# Fly.io settings for the agent. docs/DEPLOY.md walks through the deploy.
+#
+# The agent is a worker, not a web server: it dials out to LiveKit and waits
+# for calls. So there is no [http_service] here, no port, no public URL, and
+# Fly keeps the machine running because nothing tells it to stop.
+#
+# Mumbai (bom) keeps the audio path inside India: Plivo, LiveKit's India
+# region, Sarvam and this machine. Secrets (every value from agent/.env) go
+# in with `fly secrets import`, never into this file.
+
+# Change this once, same rule as the backend: global names, pick something
+# unlikely to be taken, then `fly apps create <that name>`.
+app = "lg-maya-agent"
+primary_region = "bom"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Each live call holds roughly 150 to 300 MB in the agent process. 2 GB is
+# comfortable for testing and a handful of parallel calls; raise memory and
+# cpus here before the 1,000 calls a day phase.
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"

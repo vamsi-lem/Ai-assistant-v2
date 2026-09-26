@@ -4,7 +4,7 @@ FastAPI application.
 Run locally:
     uvicorn app.main:app --reload --port 8000
 
-On Railway the start command is:
+In a container (Render, Fly) the Dockerfile runs:
     uvicorn app.main:app --host 0.0.0.0 --port $PORT
 """
 
@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .db import init_db
-from .routers import calls, conversations, health, leads, webhooks
+from .routers import bookings, calls, conversations, health, leads, webhooks
 from .services.telephony import service as telephony
 
 logging.basicConfig(
@@ -42,7 +42,13 @@ async def lifespan(app: FastAPI):
     logger.info("Telephony        %s", telephony.describe())
     logger.info("Webhooks         %s", settings.describe_webhooks())
     logger.info("Agent auth       %s", "configured" if settings.agent_api_key else "NOT CONFIGURED")
+    logger.info("Bookings         %s", settings.describe_bookings())
     logger.info("CORS allowed     %s", ", ".join(settings.cors_origins))
+    logger.info(
+        "Form brakes      %s per address per hour, %s minute gap per number",
+        settings.lead_max_per_ip_per_hour or "unlimited",
+        settings.lead_phone_cooldown_minutes or "no",
+    )
 
     if settings.dnd_check_enabled:
         logger.warning(
@@ -75,7 +81,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     # X-Agent-Key is listed so a browser preflight does not reject it, though
     # only the agent ever sends it.
-    allow_headers=["Content-Type", "X-Agent-Key"],
+    allow_headers=["Content-Type", "X-Agent-Key", "X-Dashboard-Key"],
 )
 
 app.include_router(health.router)
@@ -83,6 +89,7 @@ app.include_router(leads.router)
 app.include_router(calls.router)
 app.include_router(conversations.router)
 app.include_router(webhooks.router)
+app.include_router(bookings.router)
 
 
 @app.get("/", include_in_schema=False)

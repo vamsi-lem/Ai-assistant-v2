@@ -56,19 +56,18 @@ class TelephonyProvider(Protocol):
         """One line for the boot log and the health endpoint."""
         ...
 
-    async def place_call(self, *, to_number: str, call_id: str) -> PlacedCall:
+    async def place_call(self, *, to_number: str, call_id: str, lead_name: str = "") -> PlacedCall:
         """
-        Dial `to_number` and bridge the answered call into the room for
-        `call_id`. Raises TelephonyNotConfigured or TelephonyError.
+        Dial `to_number` into the room for `call_id`. Returns as soon as the
+        dial is accepted; answering is watched by the agent. Raises
+        TelephonyNotConfigured or TelephonyError.
         """
         ...
 
-    async def fetch_status(self, provider_call_id: str) -> CallStatus:
+    async def fetch_status(self, provider_call_id: str, *, call_id: str | None = None) -> CallStatus:
         """
-        Ask the provider how a call went.
-
-        The polling alternative to webhooks, for when the backend has no public
-        URL yet (local development).
+        Ask where a call is: ringing, in progress, or over. Used by the
+        status endpoint the frontend polls.
         """
         ...
 

@@ -3,6 +3,10 @@
 .env.local
 .env.*.local
 
+# local logs and scratch
+agent/agent-log.txt
+agent/KMS/
+
 # node
 node_modules/
 dist/

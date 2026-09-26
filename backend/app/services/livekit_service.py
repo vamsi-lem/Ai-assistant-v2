@@ -5,7 +5,9 @@ The room name is the only thing that ties a call to the agent. It is derived
 from the call id and nothing else, so the agent can recover the call id from
 the room name alone and fetch everything else from this backend. That is why
 the same agent serves a browser participant today and a SIP participant later
-without a line of it changing.
+without a line of it changing. On the phone path the backend asks LiveKit
+to dial the lead INTO that room (see telephony/plivo_provider.py), so the
+room name is again the only handle anyone needs.
 """
 
 from __future__ import annotations
@@ -64,18 +66,3 @@ def create_browser_token(call_id: str, lead_name: str) -> str:
     )
 
     return token.to_jwt()
-
-
-def sip_uri_for_call(call_id: str) -> str:
-    """
-    The SIP address the carrier dials to drop a phone call into the room.
-
-    LIVEKIT_SIP_URI is the host part from your LiveKit SIP settings, for
-    example `your-project.sip.livekit.cloud`. The room name becomes the user
-    part, which is how the dispatch rule routes the call to the right room.
-
-    Only used on the phone path.
-    """
-    settings = get_settings()
-    host = settings.livekit_sip_uri.replace("sip:", "").strip().strip("/")
-    return f"sip:{room_name_for_call(call_id)}@{host}"

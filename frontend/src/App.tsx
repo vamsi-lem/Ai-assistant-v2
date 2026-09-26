@@ -2,10 +2,51 @@ import { useEffect, useState } from 'react';
 
 import { ApiError, createLead, getHealth } from './api/client';
 import { CallPanel } from './components/CallPanel';
+import { CounsellorDashboard } from './components/CounsellorDashboard';
 import { LeadForm } from './components/LeadForm';
 import type { BrowserJoin, Call, LeadInput } from './types';
 
+/**
+ * Two pages, one build, no router library: the lead form at /, and the
+ * counsellor dashboard at /#/counsellor. A hash route needs no server
+ * rewrite rules, so it works the same on Vercel and on a laptop.
+ */
+function useHashRoute(): string {
+  const [hash, setHash] = useState(() => window.location.hash);
+  useEffect(() => {
+    const onChange = () => setHash(window.location.hash);
+    window.addEventListener('hashchange', onChange);
+    return () => window.removeEventListener('hashchange', onChange);
+  }, []);
+  return hash;
+}
+
 export default function App() {
+  const route = useHashRoute();
+  if (route === '#/counsellor') return <CounsellorPage />;
+  return <LeadPage />;
+}
+
+function CounsellorPage() {
+  return (
+    <div className="page page-wide">
+      <header>
+        <p className="eyebrow">Lemniscate Growth</p>
+        <h1>Counsellor bookings</h1>
+        <p className="lede">
+          Every slot Maya has booked, with the meeting link and whether the lead has
+          received it on WhatsApp.
+        </p>
+      </header>
+      <CounsellorDashboard />
+      <footer>
+        <a href="#/">Back to the enquiry form</a>
+      </footer>
+    </div>
+  );
+}
+
+function LeadPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [skipped, setSkipped] = useState<string | null>(null);
@@ -98,6 +139,9 @@ export default function App() {
         ) : (
           <span className="mono muted">backend unreachable</span>
         )}
+        <span className="footer-link">
+          <a href="#/counsellor">Counsellor dashboard</a>
+        </span>
       </footer>
     </div>
   );

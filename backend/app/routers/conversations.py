@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from ..db import db, find_one, get_by_id, update_by_id
+from ..db import find_one, get_by_id, insert_one, update_by_id
 from ..deps import require_agent_key
 from ..schemas import ConversationOut, ConversationUpsert
 
@@ -65,8 +65,7 @@ async def upsert_conversation(payload: ConversationUpsert) -> ConversationOut:
             patch["summary"] = payload.summary
         conversation = await update_by_id("conversations", existing["id"], patch)
     else:
-        result = await db().table("conversations").insert(row).execute()
-        conversation = result.data[0] if result.data else None
+        conversation = await insert_one("conversations", row)
 
     if not conversation:
         raise HTTPException(

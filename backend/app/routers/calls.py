@@ -12,10 +12,10 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from ..config import get_settings
 from ..db import find_one, get_by_id, update_by_id
 from ..deps import require_agent_key
 from ..schemas import AgentCallContext, CallOut, CallStatusOut
+from ..services.meetings import service as meetings
 from ..services.telephony import service as telephony
 from ..services.telephony.base import TelephonyNotConfigured
 
@@ -31,26 +31,30 @@ async def call_status(call_id: str) -> CallStatusOut:
     """
     Where is this call up to?
 
-    On the phone path, if we have no public URL the carrier cannot send us a
-    webhook, so this endpoint asks the carrier directly and writes the answer
-    back. That is what makes local development work without a tunnel.
+    On the phone path this asks LiveKit where the SIP leg is (ringing,
+    active, hung up) and writes the answer back, until the agent records the
+    final status itself. No webhook and no public URL involved.
     """
     call = await get_by_id("calls", call_id)
     if not call:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Call not found.")
 
-    settings = get_settings()
     should_poll = (
         call["transport"] == "phone"
         and call.get("provider_call_id")
         and call["status"] not in TERMINAL
-        and not settings.public_base_url  # webhooks would handle it otherwise
     )
 
     if should_poll:
         try:
-            fresh = await telephony.get_provider().fetch_status(call["provider_call_id"])
-            if fresh.status != call["status"]:
+            fresh = await telephony.get_provider().fetch_status(
+                call["provider_call_id"], call_id=call_id
+            )
+            # "completed" from a vanished room never overrides a more specific
+            # final status the agent already wrote.
+            if fresh.status != call["status"] and not (
+                fresh.status == "completed" and call["status"] in TERMINAL
+            ):
                 patch: dict = {"status": fresh.status}
                 if fresh.error:
                     patch["error"] = fresh.error
@@ -102,4 +106,6 @@ async def call_context(call_id: str) -> AgentCallContext:
         product_or_course=lead["product_or_course"],
         notes=lead.get("notes"),
         transport=call["transport"],
+        email=lead.get("email"),
+        meeting_platforms=meetings.available(),
     )

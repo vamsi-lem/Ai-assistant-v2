@@ -4,7 +4,13 @@
  * One place, so a change of host or an error-shape change is one edit.
  */
 
-import type { CallStatusResponse, LeadCreateResponse, LeadInput } from '../types';
+import type {
+  Booking,
+  BookingRow,
+  CallStatusResponse,
+  LeadCreateResponse,
+  LeadInput,
+} from '../types';
 
 const BASE_URL = (
   import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api'
@@ -81,4 +87,38 @@ export function getCallStatus(callId: string): Promise<CallStatusResponse> {
 
 export function getHealth(): Promise<Record<string, string>> {
   return request<Record<string, string>>('/health');
+}
+
+// --- Counsellor dashboard -----------------------------------------------
+//
+// Every call carries the dashboard key the counsellor typed in. It never
+// lives in the build; it lives in their browser session.
+
+function dashboardHeaders(key: string): HeadersInit {
+  return { 'X-Dashboard-Key': key };
+}
+
+export function listBookings(key: string, daysBack = 1, daysAhead = 30): Promise<BookingRow[]> {
+  return request<BookingRow[]>(`/bookings?days_back=${daysBack}&days_ahead=${daysAhead}`, {
+    headers: dashboardHeaders(key),
+  });
+}
+
+export function resendWhatsApp(key: string, bookingId: string): Promise<Booking> {
+  return request<Booking>(`/bookings/${bookingId}/resend`, {
+    method: 'POST',
+    headers: dashboardHeaders(key),
+  });
+}
+
+export function setBookingStatus(
+  key: string,
+  bookingId: string,
+  status: Booking['status'],
+): Promise<Booking> {
+  return request<Booking>(`/bookings/${bookingId}/status`, {
+    method: 'POST',
+    headers: dashboardHeaders(key),
+    body: JSON.stringify({ status }),
+  });
 }

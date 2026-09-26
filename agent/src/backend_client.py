@@ -53,6 +53,12 @@ class BackendClient:
                     "Content-Type": "application/json",
                 },
                 timeout=aiohttp.ClientTimeout(total=10),
+                # A fresh connection per request. The backend closes idle
+                # keep-alive connections after a few seconds, and reusing
+                # one that was closed fails with "Server disconnected"
+                # (seen on the periodic transcript save). Reconnecting to
+                # localhost costs a millisecond; a lost save costs a turn.
+                connector=aiohttp.TCPConnector(force_close=True),
             )
         return self._session
 
@@ -122,3 +128,92 @@ class BackendClient:
                     response.status,
                     body[:300],
                 )
+
+    async def book_slot(
+        self,
+        *,
+        lead_id: str,
+        call_id: str,
+        scheduled_at: str,
+        requested_text: str | None = None,
+        notes: str | None = None,
+        meeting_platform: str | None = None,
+    ) -> tuple[bool, str]:
+        """
+        Book a counsellor slot. The backend saves it, creates the meeting
+        link and sends the WhatsApp. Returns (ok, message) where message is
+        written for the brain to act on: on success it says how to read the
+        time back and whether the link was sent; on a bad time it says what
+        to ask the lead. Never raises into the conversation.
+        """
+        session = await self._ensure()
+        url = f"{config.backend_base_url}/bookings"
+        payload: dict[str, Any] = {
+            "lead_id": lead_id,
+            "call_id": call_id,
+            "scheduled_at": scheduled_at,
+        }
+        if requested_text:
+            payload["requested_text"] = requested_text
+        if notes:
+            payload["notes"] = notes
+        if meeting_platform:
+            payload["meeting_platform"] = meeting_platform
+
+        fallback = (
+            "The booking could not be saved right now. Tell the lead a counsellor "
+            "will call to confirm the time."
+        )
+        try:
+            async with session.post(url, json=payload) as response:
+                body = await response.json(content_type=None)
+                if response.status == 422:
+                    detail = body.get("detail") if isinstance(body, dict) else None
+                    if isinstance(detail, list):  # pydantic validation shape
+                        detail = "; ".join(str(d.get("msg", d)) for d in detail)
+                    return False, str(detail or "That time could not be understood. Ask the lead again.")
+                if response.status >= 400:
+                    logger.warning("Booking failed for lead %s: %s %s", lead_id, response.status, str(body)[:300])
+                    return False, fallback
+                return True, f"Booked for {body['spoken_time']}. {body['link_status']}"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Booking failed for lead %s: %s", lead_id, exc)
+            return False, fallback
+
+    async def save_callback(
+        self,
+        *,
+        lead_id: str,
+        callback_time: str | None = None,
+        callback_notes: str | None = None,
+    ) -> bool:
+        """
+        Record when a counsellor should ring back, and anything the lead
+        asked that Maya could not answer. Written the moment it is known,
+        not at the end of the call, so a dropped line does not lose it.
+        Returns True on success; never raises into the conversation.
+        """
+        session = await self._ensure()
+        url = f"{config.backend_base_url}/leads/{lead_id}/callback"
+
+        payload: dict[str, Any] = {}
+        if callback_time is not None:
+            payload["callback_time"] = callback_time
+        if callback_notes is not None:
+            payload["callback_notes"] = callback_notes
+
+        try:
+            async with session.patch(url, json=payload) as response:
+                if response.status >= 400:
+                    body = await response.text()
+                    logger.warning(
+                        "Could not save callback for lead %s: %s %s",
+                        lead_id,
+                        response.status,
+                        body[:300],
+                    )
+                    return False
+                return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not save callback for lead %s: %s", lead_id, exc)
+            return False

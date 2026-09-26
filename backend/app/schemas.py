@@ -74,6 +74,18 @@ class LeadOut(BaseModel):
     created_at: datetime
 
 
+class LeadCallbackUpdate(BaseModel):
+    """
+    What the agent captured during the call. Either field may be absent; a
+    call that ends before a time is agreed still records what was learned.
+    Stored by appending to the lead's existing notes column, so no schema
+    change is needed.
+    """
+
+    callback_time: str | None = Field(default=None, max_length=200)
+    callback_notes: str | None = Field(default=None, max_length=2000)
+
+
 class LeadCreateResponse(BaseModel):
     lead: LeadOut
     call: "CallOut | None" = None
@@ -163,6 +175,84 @@ class AgentCallContext(BaseModel):
     product_or_course: str
     notes: str | None = None
     transport: str
+    # Email, if the lead gave one, so a Google Meet invite can include them.
+    email: str | None = None
+    # Meeting platforms the lead may choose from on this deployment, default
+    # first: ["google", "zoom"], ["zoom"], or [] when no links are made.
+    # Maya offers the choice only when there are two.
+    meeting_platforms: list[str] = []
+
+
+# ---------------------------------------------------------------------------
+# Bookings - a counsellor slot Maya agreed on the call
+# ---------------------------------------------------------------------------
+
+
+class BookingCreate(BaseModel):
+    lead_id: str
+    call_id: str | None = None
+    # ISO 8601 with an offset, e.g. 2026-09-22T18:00:00+05:30. The agent's
+    # brain computes it from what the lead said plus the current time it was
+    # given in its prompt. A naive value is read as BOOKING_TIMEZONE.
+    scheduled_at: datetime
+    # What the lead actually said, kept verbatim for the counsellor.
+    requested_text: str | None = Field(default=None, max_length=200)
+    notes: str | None = Field(default=None, max_length=2000)
+    # The platform the lead asked for: "zoom", "google", or None for no
+    # preference (the default platform is used). Anything else is treated
+    # as no preference.
+    meeting_platform: str | None = Field(default=None, max_length=40)
+
+
+class BookingOut(BaseModel):
+    id: str
+    lead_id: str
+    call_id: str | None = None
+    scheduled_at: datetime
+    timezone: str
+    duration_minutes: int
+    requested_text: str | None = None
+    notes: str | None = None
+    meeting_provider: str | None = None
+    meeting_url: str | None = None
+    meeting_error: str | None = None
+    whatsapp_status: str
+    whatsapp_error: str | None = None
+    status: str
+    created_at: datetime
+
+
+class BookingCreateResponse(BaseModel):
+    booking: BookingOut
+    # The time as a person would say it, in the booking timezone, for the
+    # agent to read back: "Tuesday, 22 September at 6 pm".
+    spoken_time: str
+    # One sentence for the agent to tell the lead about the link.
+    link_status: str
+
+
+class BookingRow(BaseModel):
+    """One row of the counsellor dashboard (the upcoming_bookings view)."""
+
+    id: str
+    scheduled_at: datetime
+    timezone: str
+    duration_minutes: int
+    status: str
+    meeting_url: str | None = None
+    meeting_provider: str | None = None
+    meeting_error: str | None = None
+    whatsapp_status: str
+    whatsapp_error: str | None = None
+    requested_text: str | None = None
+    notes: str | None = None
+    lead_id: str
+    lead_name: str
+    lead_phone: str
+    lead_email: str | None = None
+    product_or_course: str
+    call_id: str | None = None
+    created_at: datetime
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +267,7 @@ class HealthOut(BaseModel):
     transport: str
     telephony: str
     agent_auth: str
+    bookings: str = ""
 
 
 LeadCreateResponse.model_rebuild()

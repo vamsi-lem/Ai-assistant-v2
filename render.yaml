@@ -1,0 +1,98 @@
+# Render Blueprint for the backend (free tier). docs/DEPLOY.md walks through it.
+#
+# Render reads this file when you create a "Blueprint" from the repository.
+# Values marked `sync: false` are secrets: Render asks for them once in the
+# dashboard and never shows them again. Nothing secret lives in this file.
+#
+# Free plan notes: one shared instance in Singapore, 512 MB, spins down after
+# fifteen idle minutes and takes about a minute to wake. The keep-awake ping
+# in docs/DEPLOY.md removes the wake delay during the day.
+
+services:
+  - type: web
+    name: lg-maya-backend
+    runtime: docker
+    rootDir: backend
+    region: singapore
+    plan: free
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # --- fixed for production -------------------------------------------
+      - key: APP_ENV
+        value: production
+      - key: CALL_TRANSPORT
+        value: phone
+      - key: TELEPHONY_ENABLED
+        value: "true"
+      - key: TELEPHONY_PROVIDER
+        value: plivo
+      - key: BOOKING_TIMEZONE
+        value: Asia/Kolkata
+      - key: BOOKING_DURATION_MINUTES
+        value: "30"
+      - key: DND_CHECK_ENABLED
+        value: "true"
+      - key: CONSENT_WINDOW_DAYS
+        value: "7"
+      - key: LEAD_MAX_PER_IP_PER_HOUR
+        value: "5"
+      - key: LEAD_PHONE_COOLDOWN_MINUTES
+        value: "60"
+      - key: GOOGLE_CALENDAR_ID
+        value: primary
+      - key: ZOOM_HOST_USER
+        value: me
+      - key: WHATSAPP_TEMPLATE_NAME
+        value: booking_confirmation
+      - key: WHATSAPP_TEMPLATE_LANGUAGE
+        value: en
+
+      # --- typed in once, in the Render dashboard -------------------------
+      # Same values as your local backend/.env unless the comment says otherwise.
+      - key: CORS_ORIGINS            # http://localhost:5173,https://<your app>.vercel.app
+        sync: false
+      - key: COMPANY_NAME
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: AGENT_API_KEY
+        sync: false
+      - key: DASHBOARD_KEY
+        sync: false
+      - key: PLIVO_AUTH_ID
+        sync: false
+      - key: PLIVO_AUTH_TOKEN
+        sync: false
+      - key: PLIVO_FROM_NUMBER
+        sync: false
+      - key: LIVEKIT_SIP_TRUNK_ID
+        sync: false
+      - key: MEETING_PROVIDER        # google or zoom
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REFRESH_TOKEN
+        sync: false
+      - key: ZOOM_ACCOUNT_ID
+        sync: false
+      - key: ZOOM_CLIENT_ID
+        sync: false
+      - key: ZOOM_CLIENT_SECRET
+        sync: false
+      - key: WHATSAPP_PROVIDER       # meta or none
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false

@@ -153,4 +153,6 @@ async def place_call(*, to_number: str, call_id: str, lead: dict) -> PlacedCall:
         raise ComplianceBlock(f"{to_number} is on the do-not-call list.")
 
     provider = get_provider()
-    return await provider.place_call(to_number=to_number, call_id=call_id)
+    return await provider.place_call(
+        to_number=to_number, call_id=call_id, lead_name=str(lead.get("name") or "")
+    )

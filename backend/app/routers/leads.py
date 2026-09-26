@@ -11,12 +11,20 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from .. import throttle
 from ..config import get_settings
 from ..db import get_by_id, insert_one, update_by_id
-from ..deps import client_ip
-from ..schemas import BrowserJoin, CallOut, LeadCreate, LeadCreateResponse, LeadOut
+from ..deps import client_ip, require_agent_key
+from ..schemas import (
+    BrowserJoin,
+    CallOut,
+    LeadCallbackUpdate,
+    LeadCreate,
+    LeadCreateResponse,
+    LeadOut,
+)
 from ..services import livekit_service
 from ..services.telephony import service as telephony
 from ..services.telephony.base import TelephonyError, TelephonyNotConfigured
@@ -28,6 +36,15 @@ router = APIRouter(prefix="/api/leads", tags=["leads"])
 @router.post("", response_model=LeadCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_lead(payload: LeadCreate, request: Request) -> LeadCreateResponse:
     settings = get_settings()
+
+    # ---- 0. One brake before anything is written. ------------------------
+    # A flood from one address is not a set of leads, so it is refused before
+    # the database is touched. Real people never reach this limit.
+    if not throttle.check_ip(client_ip(request)):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many submissions from this connection. Please try again in an hour.",
+        )
 
     # ---- 1. Save the lead. Always. ---------------------------------------
     now = datetime.now(timezone.utc).isoformat()
@@ -70,6 +87,32 @@ async def create_lead(payload: LeadCreate, request: Request) -> LeadCreateRespon
                 "Saved, but no call was placed because consent was not given."
             ),
         )
+
+    # ---- 2b. Same number called minutes ago: keep the lead, skip the call. --
+    try:
+        last = await throttle.recent_call_to(payload.phone)
+    except Exception:  # noqa: BLE001
+        # A failed lookup must not block a real lead; log it and carry on.
+        logger.exception("Phone cooldown lookup failed; proceeding without it")
+        last = None
+    if last is not None:
+        minutes_ago = max(1, int((datetime.now(timezone.utc) - last).total_seconds() // 60))
+        reason = (
+            f"Saved, but not called: this number was already called {minutes_ago} minute(s) ago. "
+            f"A second call is allowed after {settings.lead_phone_cooldown_minutes} minutes."
+        )
+        logger.info("Lead %s not called: %s", lead_id, reason)
+        # Status stays 'new' (the schema's list has no 'duplicate'); the note
+        # tells a counsellor reading the row why no call followed.
+        existing = (lead.get("notes") or "").strip()
+        note = "[system] Repeat submission inside the call cooldown; not called again."
+        lead = (
+            await update_by_id(
+                "leads", lead_id, {"notes": f"{existing}\n{note}".strip() if existing else note}
+            )
+            or lead
+        )
+        return LeadCreateResponse(lead=LeadOut(**lead), call=None, call_skipped_reason=reason)
 
     # ---- 3. Create the call record, which fixes the room name. ------------
     call = await insert_one(
@@ -154,4 +197,40 @@ async def read_lead(lead_id: str) -> LeadOut:
     lead = await get_by_id("leads", lead_id)
     if not lead:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lead not found.")
+    return LeadOut(**lead)
+
+
+@router.patch(
+    "/{lead_id}/callback",
+    response_model=LeadOut,
+    dependencies=[Depends(require_agent_key)],
+)
+async def save_callback(lead_id: str, payload: LeadCallbackUpdate) -> LeadOut:
+    """
+    The agent calls this the moment the lead names a callback time, not at
+    the end of the call. If the line drops ten seconds later, the time is
+    already saved. Agent-only, behind the shared secret.
+    """
+    lead = await get_by_id("leads", lead_id)
+    if not lead:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lead not found.")
+
+    # Appended to the existing notes column rather than new columns, so the
+    # schema from 0001_init.sql is all that is ever required.
+    lines: list[str] = []
+    if payload.callback_time and payload.callback_time.strip():
+        lines.append(f"Callback requested: {payload.callback_time.strip()}")
+    if payload.callback_notes and payload.callback_notes.strip():
+        lines.append(f"Asked on the call: {payload.callback_notes.strip()}")
+
+    changes: dict = {}
+    if lines:
+        existing = (lead.get("notes") or "").strip()
+        stamp = datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC")
+        addition = f"[Maya {stamp}] " + " | ".join(lines)
+        changes["notes"] = f"{existing}\n{addition}".strip() if existing else addition
+        changes["status"] = "contacted"
+        lead = await update_by_id("leads", lead_id, changes) or lead
+
+    logger.info("Lead %s callback saved: %s", lead_id, changes)
     return LeadOut(**lead)

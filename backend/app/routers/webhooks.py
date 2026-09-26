@@ -1,16 +1,14 @@
 """
 Carrier callbacks.
 
-Two endpoints, both public, both on the phone path only:
+One endpoint, public, phone path only:
 
-  /api/webhooks/plivo/answer   the carrier asks "they answered, now what?" and
-                               we reply with a SIP address
-  /api/webhooks/telephony      the carrier tells us how the call ended
+  /api/webhooks/telephony      the carrier tells us how a call ended
 
-Both are public URLs that affect call state, so the status one verifies the
-carrier's signature before believing a word of it. The answer one cannot be
-signed the same way (the carrier fetches it), so it leaks nothing and changes
-nothing: it only returns a room address derived from the id in the query string.
+On the LiveKit SIP path this is not needed at all: LiveKit reports the phone
+leg's status and the agent writes the final one. It stays for Plivo Voice API
+callbacks, and because it is a public URL that affects call state it verifies
+the carrier's signature before believing a word.
 """
 
 from __future__ import annotations
@@ -18,13 +16,12 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, HTTPException, Request, status
 
 from ..config import get_settings
-from ..db import find_one, get_by_id, update_by_id
+from ..db import find_one, update_by_id
 from ..services.telephony import service as telephony
 from ..services.telephony.base import normalise_status
-from ..services.telephony.plivo_provider import PlivoProvider
 
 logger = logging.getLogger("backend.webhooks")
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
@@ -35,30 +32,6 @@ LEAD_STATUS_FOR_CALL = {
     "busy": "no_answer",
     "failed": "failed",
 }
-
-
-@router.api_route("/plivo/answer", methods=["GET", "POST"])
-async def plivo_answer(call_id: str) -> Response:
-    """
-    The moment the lead picks up.
-
-    The carrier has a live call and no idea what to do with it, so it fetches
-    this. We hand back a SIP address and nothing else. The carrier transfers
-    the call into the LiveKit room and plays no further part.
-
-    No speech, no menu, no recorded message. That is the whole difference
-    between this and an old phone tree.
-    """
-    call = await get_by_id("calls", call_id)
-    if not call:
-        logger.warning("Answer webhook for unknown call %s", call_id)
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown call.")
-
-    xml = PlivoProvider.answer_xml(call_id)
-    logger.info("Bridging call %s into room %s", call_id, call.get("room_name"))
-
-    await update_by_id("calls", call_id, {"status": "in-progress"})
-    return Response(content=xml, media_type="application/xml")
 
 
 @router.post("/telephony")

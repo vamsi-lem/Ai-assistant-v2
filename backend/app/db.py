@@ -12,9 +12,11 @@ Nothing in this module should ever be reachable from the browser.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
+import httpx
 from supabase import AsyncClient, AsyncClientOptions, create_async_client
 
 from .config import get_settings
@@ -73,12 +75,47 @@ async def check_db() -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
+# Retrying transport failures
+#
+# On a laptop connection (and now and then in any data centre) the TLS
+# handshake to Supabase occasionally fails outright: httpx.ConnectError with
+# no message, or a read timeout. The query was never sent, so trying again a
+# moment later is safe for reads AND writes. Three attempts, short backoff.
+# Anything Supabase actually answers (a real error) is not retried.
+# ---------------------------------------------------------------------------
+
+_RETRY_ON = (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.ConnectTimeout, httpx.RemoteProtocolError)
+_ATTEMPTS = 3
+_BACKOFF_SECONDS = 0.6
+
+
+async def execute(query: Any) -> Any:
+    """Run a PostgREST query builder with retries on transport failure."""
+    last: Exception | None = None
+    for attempt in range(1, _ATTEMPTS + 1):
+        try:
+            return await query.execute()
+        except _RETRY_ON as exc:
+            last = exc
+            if attempt < _ATTEMPTS:
+                logger.warning(
+                    "Supabase transport failure (%s), retrying %d/%d",
+                    type(exc).__name__,
+                    attempt,
+                    _ATTEMPTS - 1,
+                )
+                await asyncio.sleep(_BACKOFF_SECONDS * attempt)
+    assert last is not None
+    raise last
+
+
+# ---------------------------------------------------------------------------
 # Small helpers so routers do not repeat the same three lines.
 # ---------------------------------------------------------------------------
 
 
 async def insert_one(table: str, row: dict[str, Any]) -> dict[str, Any]:
-    result = await db().table(table).insert(row).execute()
+    result = await execute(db().table(table).insert(row))
     if not result.data:
         raise RuntimeError(f"Insert into {table} returned no row")
     return result.data[0]
@@ -87,17 +124,15 @@ async def insert_one(table: str, row: dict[str, Any]) -> dict[str, Any]:
 async def get_by_id(table: str, row_id: str) -> dict[str, Any] | None:
     # maybe_single returns None for zero rows rather than raising, which is
     # what a "not found" lookup wants.
-    result = await db().table(table).select("*").eq("id", row_id).maybe_single().execute()
+    result = await execute(db().table(table).select("*").eq("id", row_id).maybe_single())
     return result.data if result and result.data else None
 
 
 async def update_by_id(table: str, row_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
-    result = await db().table(table).update(patch).eq("id", row_id).execute()
+    result = await execute(db().table(table).update(patch).eq("id", row_id))
     return result.data[0] if result.data else None
 
 
 async def find_one(table: str, column: str, value: Any) -> dict[str, Any] | None:
-    result = (
-        await db().table(table).select("*").eq(column, value).maybe_single().execute()
-    )
+    result = await execute(db().table(table).select("*").eq(column, value).maybe_single())
     return result.data if result and result.data else None

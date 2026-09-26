@@ -1,63 +1,79 @@
 # AI Voice Platform v2
 
-Lead fills a form, an AI assistant calls them, the conversation is stored.
+A lead fills a form. Within seconds an AI counsellor called Maya rings
+their phone, speaks their language (English, Hindi or Telugu), books a
+counselling slot, sends the Google Meet or Zoom link on WhatsApp, and
+writes the whole conversation to the counsellor dashboard.
 
-Rebuild of v1 on a new stack: **Supabase** instead of MongoDB, **Python**
-instead of TypeScript, **Sarvam AI** instead of Deepgram and ElevenLabs, and
-an Indian carrier instead of Twilio.
+Stack: **FastAPI** backend, **Python LiveKit agent**, **React** frontend,
+**Supabase** (Postgres). Voice by **Sarvam** (speech to text, text to
+speech), brain by **Gemini** (switchable to OpenAI, Groq or Sarvam),
+telephony by **Plivo** through LiveKit SIP, meetings by **Google Calendar**
+and **Zoom**, messages by **Meta WhatsApp Cloud API**.
 
-Start with **[docs/SETUP.md](docs/SETUP.md)**. It is ordered and each step has
-one thing to check before the next.
-
----
-
-## Who does what
-
-The single most confusing thing about this architecture is that four different
-services all sound like they might be "the agent". Only one is.
-
-| Piece | Job | Whose |
-|---|---|---|
-| **Plivo** | dials the lead's mobile, then goes silent | theirs |
-| **LiveKit** | the room that carries the audio | theirs |
-| **Sarvam** | the ears and the voice (speech to text, text to speech) | theirs |
-| **OpenAI** (or Groq) | the brain. Sarvam's LLM is a closed beta, so this is switchable via `LLM_PROVIDER` | theirs |
-| **`agent/src/main.py`** | **the agent** | **yours** |
-| **`agent/src/prompts.py`** | every word it says | **yours** |
-| **Supabase** | leads, calls, transcripts | yours, their servers |
-
-LiveKit is the room, not the agent. Sarvam is the models, not the agent. The
-agent is your code. If you want to change what it asks, edit `prompts.py` and
-restart the agent. Nothing else moves.
+| I want to | Read |
+|---|---|
+| Run it on my laptop | [docs/SETUP.md](docs/SETUP.md) |
+| Connect a phone number | [docs/PHONE.md](docs/PHONE.md) |
+| Set up bookings, Zoom, Google Meet, WhatsApp | [docs/BOOKINGS.md](docs/BOOKINGS.md) |
+| Put it on the internet | [docs/DEPLOY.md](docs/DEPLOY.md) |
+| Serve several clients from one deployment | [docs/MULTI-TENANT.md](docs/MULTI-TENANT.md) |
 
 ---
 
 ## One call, start to finish
 
 ```
-Lead submits form (React, Vercel)
+Lead submits the form (React on Vercel)
         |
         v
-Backend saves the lead                        <- always first, before any call
-        |
+Backend saves the lead                         always first, before any call
+        |  checks: consent given, not called in the last hour,
+        |  address under the hourly submission limit
         v
-Backend creates the call record               <- fixes the room name: call-<id>
+Backend creates the call record                fixes the room name: call-<id>
         |
-        +--- browser path: mints a LiveKit token, the browser joins the room
-        |
-        +--- phone path:   asks Plivo to dial, Plivo bridges the answered
-                           call into the room, then plays no further part
+        +-- phone path:   LiveKit dials the lead through Plivo's SIP trunk
+        +-- browser path: the browser joins the room with a short lived token
         |
         v
 Agent joins the room, reads the call id from the room name,
-fetches the lead from the backend, and talks
+fetches the lead from the backend, greets by name
         |
         v
-Sarvam hears -> decides -> speaks, in a loop
+Sarvam hears -> Gemini decides -> Sarvam speaks, in a loop
+        |   language chosen by the lead's first reply
+        |   slot parsed in code (slots.py), never guessed by the model
+        v
+book_slot -> backend saves the booking, creates the Meet or Zoom link,
+             sends the WhatsApp template, updates the dashboard
         |
         v
-Transcript written to Supabase every 5 seconds, and again on hangup
+Transcript written to Supabase every 5 seconds and again on hangup,
+with a short summary for the counsellor
 ```
+
+---
+
+## Who does what
+
+Four services sound like they might be "the agent". Only one is.
+
+| Piece | Job | Whose |
+|---|---|---|
+| Plivo | the SIP trunk LiveKit dials the lead through | theirs |
+| LiveKit | the room that carries the audio, and the worker's dispatcher | theirs |
+| Sarvam | the ears and the voice | theirs |
+| Gemini (or OpenAI, Groq, Sarvam) | the brain, chosen by `LLM_PROVIDER` | theirs |
+| Google Calendar, Zoom | the meeting link | theirs |
+| Meta WhatsApp | the confirmation message | theirs |
+| **`agent/src/main.py`** | **the agent** | **yours** |
+| **`agent/src/prompts.py`** | every word it says | **yours** |
+| `backend/` | the only process holding secrets | yours |
+| Supabase | leads, calls, transcripts, bookings | yours, their servers |
+
+To change what Maya asks, edit `prompts.py` and restart the agent. Nothing
+else moves.
 
 ---
 
@@ -65,96 +81,94 @@ Transcript written to Supabase every 5 seconds, and again on hangup
 
 ```
 ai-voice-platform-v2/
-├── supabase/migrations/     the three tables, with row level security on
-├── backend/                 FastAPI. The only process holding secrets.
-│   └── app/
-│       ├── routers/         one module per resource
-│       └── services/
-│           ├── livekit_service.py    room naming and join tokens
-│           └── telephony/            carrier behind one interface
-├── agent/                   the Python LiveKit worker, running on Sarvam
+├── backend/                     FastAPI. Holds every secret. Talks to Supabase.
+│   ├── app/
+│   │   ├── main.py              app, CORS, startup report
+│   │   ├── config.py            every setting, read once from .env
+│   │   ├── deps.py              agent key and dashboard key guards
+│   │   ├── throttle.py          brakes on the public form
+│   │   ├── db.py                Supabase client with retries
+│   │   ├── schemas.py           request and response models
+│   │   ├── routers/             leads, calls, conversations, bookings, webhooks, health
+│   │   └── services/
+│   │       ├── livekit_service.py    room naming, join tokens
+│   │       ├── telephony/            Plivo behind one interface
+│   │       ├── meetings/             Google Meet and Zoom behind one interface
+│   │       └── whatsapp/             Meta Cloud API behind one interface
+│   ├── check_livekit.py         diagnostic: can this key create rooms and dial
+│   ├── Dockerfile               used by Render, Fly and any container host
+│   ├── fly.toml                 paid path settings (docs/DEPLOY.md)
+│   └── .env.example             every backend setting, explained
+│
+├── agent/                       the Python LiveKit worker
+│   ├── src/
+│   │   ├── main.py              the agent: session, tools, guards, transcript flush
+│   │   ├── prompts.py           the script Maya follows, per language
+│   │   ├── language.py          language detection, fixed phrases, word lists
+│   │   ├── slots.py             day and time parsing in English, Hindi, Telugu
+│   │   ├── backend_client.py    the only way the agent reaches the backend
+│   │   └── config.py            every agent setting
+│   ├── check_agent.py           diagnostic: are the Sarvam settings valid for the installed plugin
+│   ├── Dockerfile               used by LiveKit Cloud, Fly and any container host
+│   ├── fly.toml                 paid path settings
+│   └── .env.example             every agent setting, explained
+│
+├── frontend/                    React + Vite: lead form, call panel, counsellor dashboard
 │   └── src/
-│       ├── main.py          the agent
-│       └── prompts.py       everything it says
-├── frontend/                React + Vite. Lead form and call panel.
-└── docs/SETUP.md            run order and verification
+│       ├── App.tsx
+│       ├── api/client.ts        the only place the backend URL appears
+│       └── components/          LeadForm, CallPanel, CounsellorDashboard
+│
+├── supabase/migrations/         0001 leads, calls, conversations; 0002 bookings
+├── docs/                        SETUP, PHONE, BOOKINGS, DEPLOY, MULTI-TENANT
+├── render.yaml                  free tier backend (docs/DEPLOY.md)
+├── setup.ps1                    one time laptop setup
+└── start.ps1                    starts backend, agent and frontend locally
 ```
 
 ---
 
-## Decisions worth knowing
+## Rules the code keeps
 
-**The lead is saved before any call is attempted.** A carrier outage, a bad
-number or a compliance block must never cost you the lead. This ordering is
-the one rule in `routers/leads.py` that must not be rearranged.
-
-**Browser transport is the default.** It needs no carrier, no phone number and
-costs nothing per minute, so the whole pipeline can be built and tested before
-any telephony paperwork exists. `CALL_TRANSPORT=phone` switches it.
-
-**The carrier layer is real code that stays dormant.** With no credentials,
-a phone-path request saves the lead and returns a clear "Plivo is not
-configured, missing X and Y" reason. It never fakes a success, because a lead
-showing as "calling" when nothing dialled is worse than a visible error.
-
-**Transcripts are replaced, not appended.** The agent posts the complete turn
-list on every flush. A retried or duplicated write can therefore never produce
-duplicate turns.
-
-**The agent holds no database credentials.** It is handed a room named
-`call-<id>`, recovers the id, and asks the backend for everything else. That
-keeps the Supabase secret key in one process, and it is why the same agent code
-serves a browser participant today and a phone participant later unchanged.
-
-**Row level security is on with no policies.** The anon key can read and write
-nothing. Every write goes through the backend using the secret key. If you
-later add a client dashboard, add explicit policies then; do not turn RLS off.
+- **The lead is saved before any call is attempted.** A carrier outage, a
+  bad number or a compliance block never costs the lead.
+- **No secret reaches the browser.** The frontend knows one URL. Carrier,
+  LiveKit, Supabase, Google, Zoom and Meta keys live in `backend/.env` only;
+  the agent holds only its own keys and a shared secret for the backend.
+- **Nothing fakes success.** A provider that is not configured says so in
+  the response and in the dashboard, in red, with a Resend button where one
+  makes sense.
+- **The model never does arithmetic.** Dates and times are parsed in
+  `slots.py`; the brain passes the lead's words through. A slot the lead
+  did not say cannot be booked.
+- **Every write is safe to repeat.** Transcript flushes replace the turn
+  list; a retried request cannot duplicate a turn.
+- **Consent is evidence.** The form's consent wording, timestamp and
+  address are stored on the lead. The telephony layer refuses to dial
+  without consent, with consent older than the window, or a number marked
+  do not call.
+- **The public form has brakes.** Five submissions per address per hour,
+  one call per number per hour, both configurable.
 
 ---
 
-## Compliance, built in rather than bolted on
+## Known gaps
 
-India prohibits cold calling and requires explicit digital consent before a
-commercial call. Two things enforce that here:
-
-- The form's consent checkbox is **required**, and its exact wording, the
-  timestamp and the IP are stored against the lead as evidence.
-- `services/telephony/service.py` refuses to dial a lead with no consent,
-  with consent older than seven days, or marked `do_not_call`.
-
-One gap, flagged rather than hidden: the do-not-call check
-(`is_on_dnd`) is not implemented and currently returns False for every number.
-The backend warns about this at every startup. Wire it in before calling
-anyone outside a test list. Five complaints from five recipients within ten
-days bars your number for fifteen days.
+- `is_on_dnd()` returns False for every number. The backend warns at every
+  startup. Wire in a DND registry check before calling numbers outside a
+  test list.
+- The dashboard is behind a single shared key. Fine for one counsellor;
+  add real login with roles before a team uses it.
+- No monitoring or alerting yet. `GET /api/health` reports the database
+  and each integration; point an uptime monitor at it.
+- The LLM fallback (OpenAI behind Gemini) is planned, not wired.
 
 ---
 
-## Costs at a glance
+## Cost at a glance
 
-About **₹6.34** per three minute call, plus roughly **₹1,500 a month** fixed at
-pilot volume. Sarvam's voice is about two thirds of the per-call cost, which is
-why the prompt keeps replies to one or two sentences.
-
-The phone path adds a large fixed cost: LiveKit region pinning is required by
-law for Indian numbers and only sold on their Scale plan at $500 a month.
-Build and prove the browser path first.
-
-Full breakdown, with sources, in `ai-voice-platform-vendors-and-costs.pdf`.
-
----
-
-## Status
-
-| | |
-|---|---|
-| Supabase schema | written |
-| Backend, six endpoints | written |
-| Frontend, form and call panel | written |
-| Agent on Sarvam | written |
-| Plivo layer | written, dormant until configured |
-| DND check | **not implemented**, warned at startup |
-| Anything executed | **no** — PyPI was unreachable where this was written |
-
-Nothing here has been run. See the end of `docs/SETUP.md` for the four
-specific things to verify first.
+The brain is a few hundred rupees a day at 1,000 calls; Sarvam voice
+minutes and Plivo call minutes are the larger lines, roughly 6 to 7 rupees
+a call together. WhatsApp utility messages are under a rupee each. Hosting
+is free at test volume and about $10 to $15 a month on the paid path.
+`docs/DEPLOY.md` has the table.

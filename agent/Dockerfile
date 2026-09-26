@@ -1,9 +1,9 @@
-# Agent image for Railway (or any container host).
+# Agent image. Built by LiveKit Cloud (lk agent create), Fly.io (fly deploy)
+# or any container host; docs/DEPLOY.md covers both.
 #
 # The agent is a long-running worker, not a web server. It opens an outbound
 # connection to LiveKit and waits for calls. It needs no public URL, no port,
-# and no health check. On Railway, leave "Public Networking" off for this
-# service.
+# and no health check. Do not attach a public port or domain to it.
 #
 # This is also the fix for the Windows-only resampler crash: the LiveKit native
 # library is stable on Linux, which is what this image is.

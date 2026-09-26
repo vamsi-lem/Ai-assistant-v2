@@ -31,4 +31,5 @@ async def health() -> HealthOut:
         transport=settings.describe_transport(),
         telephony=telephony.describe(),
         agent_auth="configured" if settings.agent_api_key else "NOT CONFIGURED",
+        bookings=settings.describe_bookings(),
     )

@@ -14,7 +14,7 @@ they do not match.
 Run it from the backend folder:
 
     cd backend
-    .\.venv\Scripts\python.exe check_livekit.py
+    .venv\\Scripts\\python.exe check_livekit.py
 """
 
 from __future__ import annotations
@@ -116,6 +116,53 @@ async def main() -> int:
     print("    - your laptop clock is correct; tokens carry a timestamp and a")
     print("      clock off by more than a minute or two invalidates them")
     print("    - the backend window was restarted after you last edited .env\n")
+
+    # ---- Phone path: does the outbound SIP trunk exist? --------------------
+    trunk_id = (os.environ.get("LIVEKIT_SIP_TRUNK_ID") or "").strip()
+    from_number = (os.environ.get("PLIVO_FROM_NUMBER") or "").strip()
+    print("Phone path (docs/PHONE.md)")
+    print("-" * 70)
+    if not trunk_id:
+        print("  LIVEKIT_SIP_TRUNK_ID is blank: browser calls only. Fine for now.\n")
+        return 0
+
+    client = api.LiveKitAPI(url=http_url, api_key=key, api_secret=secret)
+    try:
+        # Newer livekit-api renamed this; use whichever the installed one has.
+        if hasattr(client.sip, "list_outbound_trunk"):
+            listing = await client.sip.list_outbound_trunk(api.ListSIPOutboundTrunkRequest())
+        else:
+            listing = await client.sip.list_sip_outbound_trunk(api.ListSIPOutboundTrunkRequest())
+    except Exception as exc:  # noqa: BLE001
+        print(f"  Could not list SIP trunks: {exc}\n")
+        return 1
+    finally:
+        try:
+            await client.aclose()
+        except Exception:  # noqa: BLE001
+            pass
+
+    trunks = {t.sip_trunk_id: t for t in listing.items}
+    if trunk_id not in trunks:
+        print(f"  LIVEKIT_SIP_TRUNK_ID={trunk_id} NOT FOUND in this project.")
+        if trunks:
+            print("  Trunks that do exist here:")
+            for t in trunks.values():
+                print(f"    {t.sip_trunk_id}  {t.name}  -> {t.address}")
+        else:
+            print("  This project has no outbound trunks yet. Create one: docs/PHONE.md step 2.")
+        print()
+        return 1
+
+    t = trunks[trunk_id]
+    print(f"  Trunk {t.sip_trunk_id} ({t.name}) -> {t.address}")
+    if "plivo" not in t.address:
+        print("  [warn] address does not look like a Plivo termination domain (*.zt.plivo.com)")
+    if not t.auth_username:
+        print("  [warn] trunk has no auth_username; Plivo will refuse the calls")
+    if from_number and from_number not in list(t.numbers):
+        print(f"  [warn] PLIVO_FROM_NUMBER {from_number} is not in the trunk's numbers {list(t.numbers)}")
+    print("  Trunk looks usable. Next: CALL_TRANSPORT=phone, TELEPHONY_ENABLED=true, restart, test.\n")
     return 0
 
 

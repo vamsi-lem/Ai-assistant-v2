@@ -4,6 +4,8 @@ __pycache__/
 .env
 .env.*
 *.log
-*.txt.bak
 agent-log.txt
+KMS/
+fly.toml
+livekit.toml
 check_agent.py

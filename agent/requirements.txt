@@ -12,5 +12,14 @@
 # breaks, pin it and tell me which.
 
 livekit-agents[sarvam,silero,turn-detector]>=1.8
+
+# Background-noise removal on the lead's audio. Only works against LiveKit
+# Cloud, which this project uses. Without it, a TV in the room gets
+# transcribed as the lead and the greeting waits for it to stop talking.
+livekit-plugins-noise-cancellation>=0.2
 aiohttp>=3.10
 python-dotenv>=1.0
+
+# Timezone database. Windows has none built in, and Python's zoneinfo needs
+# it to understand Asia/Kolkata. Harmless on Linux.
+tzdata>=2024.1

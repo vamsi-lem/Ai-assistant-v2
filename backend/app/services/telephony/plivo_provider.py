@@ -1,37 +1,90 @@
 """
-Plivo implementation.
+Plivo, reached through LiveKit's SIP bridge.
 
-Plivo was chosen over Twilio and Exotel for India because it is on LiveKit's
-tested provider list, it actually issues Indian numbers (Twilio does not),
-it is roughly ten times cheaper than Twilio per minute, and it authenticates
-the SIP trunk with credentials rather than an IP allowlist, which matters
-because LiveKit Cloud calls out from large address ranges.
+How a phone call happens:
 
-This file is written and real, but stays DORMANT until credentials exist.
-With none set, place_call raises TelephonyNotConfigured with a message saying
-exactly what is missing. It never pretends to have dialled.
+    backend   asks LiveKit "put a SIP participant in room call-<id> by
+              dialling +91xxxxxxxxxx through trunk ST_xxx"
+    LiveKit   dials out through Plivo's SIP trunk (Zentrunk), which rings
+              the lead's mobile from PLIVO_FROM_NUMBER
+    agent     was dispatched the moment the room appeared; it waits until
+              the lead answers, then greets exactly as it does in the browser
+
+Plivo never fetches a webhook and never sees any XML. It is a wire between
+LiveKit and the Indian phone network, nothing more. That is why this file
+needs no public URL, which also means it works from a laptop.
+
+Plivo was chosen over Twilio and Exotel because it is on LiveKit's tested
+provider list, it issues Indian numbers (Twilio does not), and it
+authenticates the SIP trunk with a username and password rather than an IP
+allowlist, which matters because LiveKit Cloud dials out from many addresses.
+
+This file is dormant until credentials exist. With none set, place_call
+raises TelephonyNotConfigured naming exactly what is missing. It never
+pretends to have dialled.
 """
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import hmac
 import logging
-from xml.sax.saxutils import escape
+import re
+
+from google.protobuf.duration_pb2 import Duration
+from livekit import api
 
 from ...config import get_settings
-from ..livekit_service import sip_uri_for_call
+from ..livekit_service import room_name_for_call
 from .base import (
     CallStatus,
     PlacedCall,
     TelephonyError,
     TelephonyNotConfigured,
-    normalise_status,
 )
 
 logger = logging.getLogger("backend.telephony.plivo")
+
+# LiveKit's own words for where a SIP call is (participant attribute
+# `sip.callStatus`), mapped to ours.
+_SIP_STATUS = {
+    "dialing": "ringing",
+    "ringing": "ringing",
+    "active": "in-progress",
+    "automation": "in-progress",
+    "hangup": "completed",
+}
+
+# How long a phone may ring before LiveKit gives up. Indian networks send a
+# call to voicemail or "not reachable" well inside this.
+RING_TIMEOUT_SECONDS = 40
+
+# Hard ceiling on one call, so a stuck line cannot bill for an hour.
+MAX_CALL_SECONDS = 15 * 60
+
+
+def to_e164_india(raw: str) -> str:
+    """
+    +91 and ten digits, whatever the lead typed.
+
+    Accepts "9876543210", "09876543210", "+91 98765 43210", "91-9876543210".
+    Anything that does not reduce to a ten digit Indian mobile is rejected
+    here, before a paisa is spent.
+    """
+    digits = re.sub(r"\D", "", raw or "")
+    if digits.startswith("91") and len(digits) == 12:
+        digits = digits[2:]
+    elif digits.startswith("0") and len(digits) == 11:
+        digits = digits[1:]
+    if len(digits) != 10 or digits[0] not in "6789":
+        raise TelephonyError(f"{raw!r} is not a valid Indian mobile number.")
+    return f"+91{digits}"
+
+
+def _lk() -> api.LiveKitAPI:
+    s = get_settings()
+    return api.LiveKitAPI(s.livekit_url, s.livekit_api_key, s.livekit_api_secret)
 
 
 class PlivoProvider:
@@ -40,54 +93,33 @@ class PlivoProvider:
     # -- configuration ------------------------------------------------------
 
     def _missing(self) -> list[str]:
-        """
-        What Plivo needs before it can dial at all.
-
-        LIVEKIT_SIP_URI is deliberately NOT in this list. Without it the call
-        still happens, it just speaks a test line instead of bridging into the
-        room. That distinction matters a lot in practice: bridging requires
-        LiveKit region pinning, which is only sold on their Scale plan, so
-        making the SIP URI mandatory here would mean you could not test your
-        carrier setup at all until you had spent $500 a month.
-        """
         s = get_settings()
         gaps = []
-        if not s.plivo_auth_id:
-            gaps.append("PLIVO_AUTH_ID")
-        if not s.plivo_auth_token:
-            gaps.append("PLIVO_AUTH_TOKEN")
         if not s.plivo_from_number:
             gaps.append("PLIVO_FROM_NUMBER")
-        if not s.public_base_url:
-            # Plivo has no inline-XML option like Twilio does. It can only
-            # FETCH call instructions from a URL, so without a reachable
-            # backend it has no way to learn what to do with an answered call.
-            gaps.append("PUBLIC_BASE_URL")
+        if not s.livekit_sip_trunk_id:
+            gaps.append("LIVEKIT_SIP_TRUNK_ID")
+        # The Auth ID and token are not needed to dial: LiveKit holds the SIP
+        # username and password inside the trunk. They are only used to
+        # verify Plivo webhooks, and are checked there.
         return gaps
 
     def is_configured(self) -> bool:
         return not self._missing()
 
-    def bridges_to_livekit(self) -> bool:
-        """True when a call will be joined to the room rather than just tested."""
-        return bool(get_settings().livekit_sip_uri)
-
     def describe(self) -> str:
         gaps = self._missing()
         if gaps:
             return f"Plivo NOT configured. Missing: {', '.join(gaps)}"
-
         s = get_settings()
-        mode = (
-            f"bridging into LiveKit SIP at {s.livekit_sip_uri}"
-            if self.bridges_to_livekit()
-            else "TEST MODE, speaks one line and hangs up (LIVEKIT_SIP_URI unset)"
+        return (
+            f"Plivo via LiveKit SIP trunk {s.livekit_sip_trunk_id}, "
+            f"dialling from {s.plivo_from_number}"
         )
-        return f"Plivo ready, dialling from {s.plivo_from_number}, {mode}"
 
     # -- placing a call -----------------------------------------------------
 
-    async def place_call(self, *, to_number: str, call_id: str) -> PlacedCall:
+    async def place_call(self, *, to_number: str, call_id: str, lead_name: str = "") -> PlacedCall:
         gaps = self._missing()
         if gaps:
             raise TelephonyNotConfigured(
@@ -95,146 +127,87 @@ class PlivoProvider:
             )
 
         s = get_settings()
+        dial_to = to_e164_india(to_number)
+        room = room_name_for_call(call_id)
 
-        # Plivo fetches this URL when the lead answers, and does whatever the
-        # XML it returns says. See answer_xml() below.
-        answer_url = f"{s.public_base_url}/api/webhooks/plivo/answer?call_id={call_id}"
-        hangup_url = f"{s.public_base_url}/api/webhooks/telephony"
+        # Every field is documented for CreateSIPParticipantRequest. The newer
+        # ones are dropped if the installed livekit-api predates them, with a
+        # log line, rather than crashing the call.
+        wanted = {
+            "sip_trunk_id": s.livekit_sip_trunk_id,
+            "sip_call_to": dial_to,
+            "sip_number": s.plivo_from_number,
+            "room_name": room,
+            "participant_identity": f"phone-{call_id}",
+            "participant_name": lead_name or dial_to,
+            "ringing_timeout": Duration(seconds=RING_TIMEOUT_SECONDS),
+            "max_call_duration": Duration(seconds=MAX_CALL_SECONDS),
+            # Return at once. The agent watches the participant's call status
+            # and greets only when it turns active; the backend must not hold
+            # an HTTP request open for forty seconds of ringing.
+            "wait_until_answered": False,
+            # LiveKit's noise cancellation on the phone leg itself.
+            "krisp_enabled": True,
+        }
+        allowed = api.CreateSIPParticipantRequest.DESCRIPTOR.fields_by_name
+        request_kwargs = {k: v for k, v in wanted.items() if k in allowed}
+        skipped = [k for k in wanted if k not in allowed]
+        if skipped:
+            logger.info("Installed livekit-api lacks %s; upgrade it to use them", ", ".join(skipped))
 
-        if not self.bridges_to_livekit():
-            logger.warning(
-                "LIVEKIT_SIP_URI is not set, so the answered call will speak a test "
-                "line and hang up rather than reaching the agent. That is enough to "
-                "prove the carrier path. Set it once LiveKit region pinning is in place."
-            )
-
-        def _dial() -> dict:
-            # The Plivo SDK is synchronous, so it runs in a worker thread. A
-            # blocking HTTP call on the event loop would stall every other
-            # request for the length of the round trip.
-            import plivo  # imported lazily so the package is optional until used
-
-            client = plivo.RestClient(s.plivo_auth_id, s.plivo_auth_token)
-            return client.calls.create(
-                from_=s.plivo_from_number,
-                to_=to_number,
-                answer_url=answer_url,
-                answer_method="POST",
-                hangup_url=hangup_url,
-                hangup_method="POST",
-            )
-
+        lk = _lk()
         try:
-            response = await asyncio.to_thread(_dial)
-        except Exception as exc:  # noqa: BLE001 - surface the provider's own words
-            logger.exception("Plivo refused the call for %s", call_id)
-            raise TelephonyError(f"Plivo rejected the call: {exc}") from exc
-
-        # The SDK returns an object or dict depending on version; handle both
-        # rather than assuming.
-        request_uuid = (
-            response.get("request_uuid")
-            if isinstance(response, dict)
-            else getattr(response, "request_uuid", None)
-        )
-
-        if not request_uuid:
-            raise TelephonyError(f"Plivo accepted the call but returned no id: {response!r}")
-
-        logger.info("Plivo dialling %s for call %s (uuid %s)", to_number, call_id, request_uuid)
-        return PlacedCall(provider=self.name, provider_call_id=str(request_uuid), status="ringing")
-
-    # -- the answer XML -----------------------------------------------------
-
-    @staticmethod
-    def answer_xml(call_id: str) -> str:
-        """
-        What Plivo does the moment the lead picks up.
-
-        This is Plivo XML, their equivalent of Twilio's TwiML. Two modes, and
-        which one you get depends only on whether LIVEKIT_SIP_URI is set.
-
-          SIP unset  speak one line, hang up. Proves your Plivo account, your
-                     KYC, your Indian number, the answer webhook and the status
-                     callbacks all work. Costs about a rupee. Needs no LiveKit
-                     plan at all.
-
-          SIP set    transfer the live call into the LiveKit room. Plivo then
-                     plays no further part in the conversation. No speech, no
-                     menu, no recorded message: the XML is an address.
-
-        Test in the first mode first. If the phone rings and you hear the line,
-        every hard part of Indian telephony is already working and only the
-        bridge remains, which is the part gated on region pinning.
-        """
-        sip_host = get_settings().livekit_sip_uri
-
-        if not sip_host:
-            message = (
-                "Hello. This is a test call from the A I voice platform. "
-                "Your telephony provider is connected correctly. Goodbye."
+            participant = await lk.sip.create_sip_participant(
+                api.CreateSIPParticipantRequest(**request_kwargs)
             )
-            return (
-                '<?xml version="1.0" encoding="UTF-8"?>\n'
-                "<Response>\n"
-                f'  <Speak language="en-IN">{escape(message)}</Speak>\n'
-                "</Response>\n"
-            )
+        except api.TwirpError as exc:
+            logger.error("LiveKit refused to dial %s for call %s: %s", dial_to, call_id, exc)
+            raise TelephonyError(f"LiveKit could not place the call: {exc.message}") from exc
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Dial failed for call %s", call_id)
+            raise TelephonyError(f"Could not place the call: {exc}") from exc
+        finally:
+            await lk.aclose()
 
-        # VERIFY THIS ONE THING against Plivo's own LiveKit integration guide
-        # before the first bridged call. <Dial><User>sip:...</User></Dial> is
-        # the documented shape for dialling a SIP endpoint, but it could not be
-        # tested from here, and a wrong element name presents as a call that
-        # connects and then silently drops. The test mode above does not touch
-        # this path, so prove that first.
-        target = escape(sip_uri_for_call(call_id))
-        return (
-            '<?xml version="1.0" encoding="UTF-8"?>\n'
-            "<Response>\n"
-            "  <Dial>\n"
-            f"    <User>{target}</User>\n"
-            "  </Dial>\n"
-            "</Response>\n"
+        sip_call_id = getattr(participant, "sip_call_id", "") or participant.participant_identity
+        logger.info(
+            "Dialling %s for call %s in room %s (sip call %s)", dial_to, call_id, room, sip_call_id
         )
+        return PlacedCall(provider=self.name, provider_call_id=str(sip_call_id), status="ringing")
 
     # -- status -------------------------------------------------------------
 
-    async def fetch_status(self, provider_call_id: str) -> CallStatus:
+    async def fetch_status(self, provider_call_id: str, *, call_id: str | None = None) -> CallStatus:
         """
-        Poll Plivo for a call's outcome.
+        Where is the call? Asked of LiveKit, not Plivo.
 
-        Used when the backend has no public URL, so Plivo cannot reach us with
-        a webhook. Once deployed, the webhook path is better: it is instant and
-        costs no requests.
+        The phone participant carries a `sip.callStatus` attribute that
+        LiveKit keeps current: dialing, ringing, active, hangup. Once the
+        room is gone the agent has already written the final status, so
+        this hands back "completed" and the stored value wins if it is more
+        specific (no-answer, busy).
         """
-        gaps = self._missing()
-        if gaps:
-            raise TelephonyNotConfigured("Plivo is not configured: " + ", ".join(gaps))
+        if not call_id:
+            return CallStatus(status="in-progress")
 
-        s = get_settings()
-
-        def _fetch() -> dict:
-            import plivo
-
-            client = plivo.RestClient(s.plivo_auth_id, s.plivo_auth_token)
-            try:
-                return client.calls.get(call_uuid=provider_call_id)
-            except Exception:
-                # A call still ringing is not in the completed-calls resource
-                # yet; live calls live in a different one.
-                return client.live_calls.get(live_call_uuid=provider_call_id)
-
+        room = room_name_for_call(call_id)
+        lk = _lk()
         try:
-            result = await asyncio.to_thread(_fetch)
+            listing = await lk.room.list_participants(api.ListParticipantsRequest(room=room))
+        except api.TwirpError as exc:
+            if "not" in exc.message.lower():  # "room does not exist"
+                return CallStatus(status="completed")
+            return CallStatus(status="in-progress", error=exc.message)
         except Exception as exc:  # noqa: BLE001
             return CallStatus(status="in-progress", error=f"Could not read status: {exc}")
+        finally:
+            await lk.aclose()
 
-        raw = (
-            result.get("call_status")
-            if isinstance(result, dict)
-            else getattr(result, "call_status", "")
-        )
-        return CallStatus(status=normalise_status(str(raw)))
+        for p in listing.participants:
+            sip_status = dict(p.attributes).get("sip.callStatus")
+            if sip_status:
+                return CallStatus(status=_SIP_STATUS.get(sip_status, "in-progress"))
+        return CallStatus(status="in-progress")
 
     # -- webhook verification -----------------------------------------------
 
@@ -242,14 +215,12 @@ class PlivoProvider:
         """
         Confirm a status callback really came from Plivo.
 
-        Plivo signs callbacks with V3 signatures: HMAC-SHA256 over
-        `url + nonce`, base64 encoded, sent as X-Plivo-Signature-V3 with the
-        nonce in X-Plivo-Signature-V3-Nonce. The header may carry several
-        comma-separated signatures, and any one matching is valid.
-
-        Hand-rolled rather than using the SDK helper for the same reason as in
-        v1: it works identically whatever SDK version is installed, and when it
-        fails the reason is visible here rather than inside a dependency.
+        Not exercised on the SIP path, where LiveKit reports status, but it
+        is the correct check for any Plivo Voice API callback and stays so
+        the webhook route is never an open door: HMAC-SHA256 over
+        `url + nonce`, base64, in X-Plivo-Signature-V3, with the nonce in
+        X-Plivo-Signature-V3-Nonce. The header may carry several
+        comma-separated signatures; any one matching is valid.
         """
         s = get_settings()
         if not s.plivo_auth_token:

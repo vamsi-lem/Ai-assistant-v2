@@ -68,17 +68,18 @@ foreach ($check in $checks) {
   if ((Get-EnvValue $check.File $check.Key) -eq '') { $blank += "$($check.Where) -> $($check.Key)" }
 }
 
-# The brain has its own key, and which key depends on LLM_PROVIDER. Sarvam's
-# LLM is a closed beta, so an account that works for speech still cannot use
-# it. Catch that here instead of on a silent call.
+# The brain has its own key, and which key depends on LLM_PROVIDER. Sarvam
+# reuses SARVAM_API_KEY, which was checked above. Catch a missing key here
+# instead of on a silent call.
 $provider = (Get-EnvValue $agentEnv 'LLM_PROVIDER').ToLower()
 if ($provider -eq '') { $provider = 'openai' }
 
 switch ($provider) {
   'openai' { if ((Get-EnvValue $agentEnv 'OPENAI_API_KEY') -eq '') { $blank += "agent\.env -> OPENAI_API_KEY  (LLM_PROVIDER is openai)" } }
   'groq'   { if ((Get-EnvValue $agentEnv 'GROQ_API_KEY')   -eq '') { $blank += "agent\.env -> GROQ_API_KEY  (LLM_PROVIDER is groq)" } }
+  'gemini' { if ((Get-EnvValue $agentEnv 'GEMINI_API_KEY') -eq '') { $blank += "agent\.env -> GEMINI_API_KEY  (LLM_PROVIDER is gemini)" } }
   'sarvam' { }
-  default  { $blank += "agent\.env -> LLM_PROVIDER is '$provider', must be openai, groq or sarvam" }
+  default  { $blank += "agent\.env -> LLM_PROVIDER is '$provider', must be openai, gemini, groq or sarvam" }
 }
 
 if ($blank.Count -gt 0) {
@@ -91,8 +92,9 @@ Ok "required values are filled in"
 Ok "brain: $provider"
 
 if ($provider -eq 'sarvam') {
-  Write-Host "  [note] LLM_PROVIDER=sarvam only works if Sarvam has granted your account" -ForegroundColor Yellow
-  Write-Host "         beta access to their LLM. If Maya never speaks, that is why." -ForegroundColor Yellow
+  Write-Host "  [note] LLM_PROVIDER=sarvam uses Sarvam's v1 chat endpoint and the same credits" -ForegroundColor Yellow
+  Write-Host "         as the voice. If Maya never speaks, check the agent log for a 400 or 402" -ForegroundColor Yellow
+  Write-Host "         from api.sarvam.ai; agent\.env.example says how to test access directly." -ForegroundColor Yellow
 }
 
 # The agent key must match exactly, or the agent joins the room and is then

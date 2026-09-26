@@ -19,6 +19,12 @@ supabase>=2.31
 # package from the `livekit` realtime SDK the agent uses.
 livekit-api>=1.2
 
-# Carrier SDK. Only imported when a call is actually placed, so the backend
-# starts fine without credentials.
-plivo>=4.60
+# No Plivo SDK: LiveKit dials through the Plivo SIP trunk, so the backend
+# only ever talks to LiveKit (livekit-api above).
+
+# Meeting links (Zoom, Google) and WhatsApp (Meta) are plain HTTPS calls.
+httpx>=0.27
+
+# Timezone database. Windows has none built in, and Python's zoneinfo needs
+# it to understand Asia/Kolkata. Harmless on Linux.
+tzdata>=2024.1

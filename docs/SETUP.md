@@ -210,63 +210,39 @@ off.
 
 ## Step 7. Deploy
 
-| Piece | Platform | Root directory | Notes |
-|---|---|---|---|
-| Frontend | Vercel | `frontend` | framework preset Vite |
-| Backend | Railway | `backend` | start `uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
-| Agent | Railway | `agent` | start `python -m src.main start`, no domain |
+`docs/DEPLOY.md` is the full guide. The shape:
+
+| Piece | Free path | Paid path |
+|---|---|---|
+| Frontend | Vercel | Vercel |
+| Backend | Render free web service (`render.yaml`) | Fly.io Mumbai (`backend/fly.toml`) |
+| Agent | LiveKit Cloud hosted agent (`agent/Dockerfile`) | Fly.io Mumbai (`agent/fly.toml`) |
 
 Two things people get wrong here:
 
 **The agent cannot go on Vercel.** Vercel is serverless: a function runs for
 seconds then shuts down. The agent holds a live connection for the length of a
-call. It needs an always-on Railway service.
+call. It needs an always-on worker, which is what LiveKit Cloud or a Fly
+machine provides.
 
 **Update `CORS_ORIGINS` after Vercel gives you a URL.** Skip this and the form
 fails silently in the browser with a CORS error that looks exactly like the
 backend being down.
 
-Also note the agent's build command on Railway must include the model download:
-
-```
-pip install -r requirements.txt && python -m src.main download-files
-```
-
-Without it the agent tries to fetch the voice detection model mid-call.
-
 ---
 
-## Step 8. Phone calls, later
+## Step 8. Phone calls
 
-Blocked on two things that are not code:
+Wired through LiveKit's SIP bridge: the backend asks LiveKit to dial the
+lead through a Plivo SIP trunk, the answered call lands in the room, and
+the agent greets once the leg is active. No webhooks, no public URL, works
+from a laptop. The full setup, including the exact trunk JSON, is in
+`docs/PHONE.md`. In short:
 
-1. **A Plivo account** with an Indian landline-series number (080 or 022, not
-   a mobile, not 140). About an hour, needs your GST certificate.
-2. **LiveKit India region pinning.** Required by law for Indian numbers and
-   only available on their Scale plan at $500 a month. Email their sales team
-   before assuming this is affordable.
-
-When both are ready, set in `backend/.env`:
-
-```
-CALL_TRANSPORT=phone
-TELEPHONY_ENABLED=true
-PLIVO_AUTH_ID=...
-PLIVO_AUTH_TOKEN=...
-PLIVO_FROM_NUMBER=+9180xxxxxxxx
-LIVEKIT_SIP_URI=your-project.sip.livekit.cloud
-PUBLIC_BASE_URL=https://your-backend.up.railway.app
-```
-
-No code changes. The Plivo path is already written and sits dormant until
-those values exist.
-
-**One thing to verify before the first live phone call:** the SIP element name
-in `backend/app/services/telephony/plivo_provider.py`, in `answer_xml()`. I
-wrote `<Dial><User>sip:...</User></Dial>` from Plivo's documentation but could
-not test it. Check it against Plivo's own LiveKit integration guide. A wrong
-element name shows up as a call that connects and then silently drops, which
-is a miserable thing to debug.
+1. Plivo: a Zentrunk outbound trunk with a credential.
+2. LiveKit: an outbound trunk pointing at it (`lk sip outbound create`).
+3. `backend/.env`: `CALL_TRANSPORT=phone`, `TELEPHONY_ENABLED=true`,
+   `PLIVO_FROM_NUMBER`, `LIVEKIT_SIP_TRUNK_ID`.
 
 ---
 
@@ -276,24 +252,33 @@ The code was written without PyPI access, so nothing had been executed until
 it ran on a Windows laptop on 18 September 2026. Three things surfaced, all
 now fixed. Recorded here so nobody rediscovers them:
 
-1. **Sarvam's LLM is a closed beta.** Every chat request from an ordinary
-   account returns `400 This endpoint is currently in beta and not available`.
-   Speech to text and text to speech on the same key work fine. The brain is
-   therefore a separate, switchable choice (`LLM_PROVIDER`), defaulting to
-   OpenAI. Sarvam remains an option for when they grant access.
+1. **Sarvam's LLM refused the plugin.** Every chat request through
+   `livekit-plugins-sarvam`'s LLM class returned `400 This endpoint is
+   currently in beta and not available`. Speech to text and text to speech
+   on the same key work fine. The brain is therefore a separate, switchable
+   choice (`LLM_PROVIDER`). Update, 26 September: Sarvam's v1 chat
+   completions endpoint is documented as generally available (only their v2
+   endpoint is whitelisted per key), so `LLM_PROVIDER=sarvam` now goes
+   through the OpenAI client pointed at `https://api.sarvam.ai/v1` rather
+   than the plugin's class. `agent/.env.example` has a one line access test.
 2. **`anushka` is a `bulbul:v2` speaker.** `bulbul:v3` rejects it at startup
    with the full list of valid names, which is now in `agent/.env.example`.
    Default is `priya`.
-3. **`sarvam-105b-conversations` was never verified.** Replaced with the
-   plugin's own default, `sarvam-105b`. Only relevant when `LLM_PROVIDER=sarvam`.
+3. **`sarvam-105b-conversations` was never verified** on that run and was
+   replaced with `sarvam-105b`. Sarvam's current docs list both on the v1
+   endpoint and describe the conversations variant as built for voice
+   agents, so it is the default again (`SARVAM_LLM_MODEL`). Only relevant
+   when `LLM_PROVIDER=sarvam`.
 
 Confirmed working on that run: `sarvam.STTRealtime` with `codemix` and `fast`
 (it transcribed Hindi correctly), `sarvam.TTS` with `bulbul:v3`, the
 `conversation_item_added` handler, the transcript flush, and the shutdown
 hook. The summary call uses `session.llm.chat()` and works with any provider.
 
-Still unverified: **the Plivo SIP element**, as above. It cannot be tested
-without a bought number.
+Still unverified until the first phone test: the LiveKit outbound trunk to
+Plivo (`docs/PHONE.md`). The dial request itself uses only documented
+LiveKit API fields, and the agent's wait-for-answer logic reads LiveKit's
+own `sip.callStatus` attribute.
 
 ### Known Windows issue
 
@@ -308,5 +293,5 @@ This is a thread-safety race in the resampler that ships inside LiveKit's
 Rust SDK, triggered when the input and output resamplers initialise at the
 same moment. Not in this codebase. Click **Ignore** and the call usually
 continues. It does not occur on Linux, which is where the agent runs in
-production (Railway). If it becomes a nuisance during local testing, run the
+production (LiveKit Cloud or Fly). If it becomes a nuisance during local testing, run the
 agent under WSL2.

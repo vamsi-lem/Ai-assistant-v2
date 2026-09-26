@@ -86,19 +86,67 @@ class Settings:
         self.plivo_auth_id: str = _str("PLIVO_AUTH_ID")
         self.plivo_auth_token: str = _str("PLIVO_AUTH_TOKEN")
         self.plivo_from_number: str = _str("PLIVO_FROM_NUMBER")
+        # The LiveKit OUTBOUND trunk that points at Plivo (ST_...). LiveKit
+        # dials the lead through it; this is the only carrier wiring needed.
         self.livekit_sip_trunk_id: str = _str("LIVEKIT_SIP_TRUNK_ID")
+        # Only for the inbound direction (a lead calling Maya). Unused today.
         self.livekit_sip_uri: str = _str("LIVEKIT_SIP_URI")
 
-        # Public base URL of THIS backend, used to build webhook callback URLs.
-        # On Railway this is your generated domain. Leave blank locally and the
-        # status-polling path is used instead.
+        # Public base URL of THIS backend. Not needed for calls (LiveKit
+        # reports status directly); only for optional Plivo webhooks.
         self.public_base_url: str = _str("PUBLIC_BASE_URL").rstrip("/")
+
+        # --- Bookings: slot, meeting link, WhatsApp --------------------------
+        #
+        # When Maya books a counsellor slot, the backend creates a meeting
+        # link and sends it to the lead on WhatsApp. Each part is a switchable
+        # provider and each is optional: with a provider set to "none" the
+        # booking is still saved and shown on the counsellor dashboard, and
+        # the dashboard says what was not sent, so nothing is silently lost.
+        self.booking_timezone: str = _str("BOOKING_TIMEZONE", "Asia/Kolkata")
+        self.booking_duration_minutes: int = _int("BOOKING_DURATION_MINUTES", 30)
+        self.company_name: str = _str("COMPANY_NAME", "our team")
+
+        # zoom | google | none. The DEFAULT platform: used when the lead has
+        # no preference ("anything is fine"). Any other platform whose
+        # credentials are filled in below is also available, and Maya offers
+        # the lead the choice between the configured ones on the call.
+        self.meeting_provider: str = _str("MEETING_PROVIDER", "none").lower()
+        # Zoom Server-to-Server OAuth app (marketplace.zoom.us -> Develop ->
+        # Build App -> Server-to-Server OAuth). Scope: meeting:write:admin.
+        self.zoom_account_id: str = _str("ZOOM_ACCOUNT_ID")
+        self.zoom_client_id: str = _str("ZOOM_CLIENT_ID")
+        self.zoom_client_secret: str = _str("ZOOM_CLIENT_SECRET")
+        self.zoom_host_user: str = _str("ZOOM_HOST_USER", "me")
+        # Google Calendar with Meet. OAuth client + a one-time refresh token
+        # for the counsellor's Google account (docs/BOOKINGS.md).
+        self.google_client_id: str = _str("GOOGLE_CLIENT_ID")
+        self.google_client_secret: str = _str("GOOGLE_CLIENT_SECRET")
+        self.google_refresh_token: str = _str("GOOGLE_REFRESH_TOKEN")
+        self.google_calendar_id: str = _str("GOOGLE_CALENDAR_ID", "primary")
+
+        # meta | none. Meta's WhatsApp Cloud API: a business-initiated message
+        # must be an approved template, so the template name is config.
+        self.whatsapp_provider: str = _str("WHATSAPP_PROVIDER", "none").lower()
+        self.whatsapp_phone_number_id: str = _str("WHATSAPP_PHONE_NUMBER_ID")
+        self.whatsapp_access_token: str = _str("WHATSAPP_ACCESS_TOKEN")
+        self.whatsapp_template_name: str = _str("WHATSAPP_TEMPLATE_NAME", "booking_confirmation")
+        self.whatsapp_template_language: str = _str("WHATSAPP_TEMPLATE_LANGUAGE", "en")
+
+        # The counsellor dashboard is behind this. Generate like AGENT_API_KEY.
+        self.dashboard_key: str = _str("DASHBOARD_KEY")
 
         # --- Compliance -----------------------------------------------------
         # When on, a number on the do-not-call list is never dialled unless the
         # lead has a recorded consent timestamp inside the window below.
         self.dnd_check_enabled: bool = _bool("DND_CHECK_ENABLED", True)
         self.consent_window_days: int = _int("CONSENT_WINDOW_DAYS", 7)
+
+        # --- Brakes on the public form (see throttle.py) ----------------------
+        # Submissions per client address per rolling hour, and the minimum gap
+        # between two calls to the same number. 0 turns either one off.
+        self.lead_max_per_ip_per_hour: int = _int("LEAD_MAX_PER_IP_PER_HOUR", 5)
+        self.lead_phone_cooldown_minutes: int = _int("LEAD_PHONE_COOLDOWN_MINUTES", 60)
 
     # -- validation ---------------------------------------------------------
 
@@ -130,10 +178,65 @@ class Settings:
                     missing.append("PLIVO_AUTH_TOKEN")
                 if not self.plivo_from_number:
                     missing.append("PLIVO_FROM_NUMBER")
-                if not self.livekit_sip_uri:
-                    missing.append("LIVEKIT_SIP_URI")
+                if not self.livekit_sip_trunk_id:
+                    missing.append("LIVEKIT_SIP_TRUNK_ID")
+
+        # A provider that is switched on must be complete. "none" needs nothing.
+        if self.meeting_provider == "zoom":
+            for name in ("ZOOM_ACCOUNT_ID", "ZOOM_CLIENT_ID", "ZOOM_CLIENT_SECRET"):
+                if not getattr(self, name.lower()):
+                    missing.append(name)
+        elif self.meeting_provider == "google":
+            for name in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN"):
+                if not getattr(self, name.lower()):
+                    missing.append(name)
+        elif self.meeting_provider != "none":
+            missing.append(f"MEETING_PROVIDER is '{self.meeting_provider}', must be zoom, google or none")
+
+        if self.whatsapp_provider == "meta":
+            for name in ("WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_ACCESS_TOKEN"):
+                if not getattr(self, name.lower()):
+                    missing.append(name)
+        elif self.whatsapp_provider != "none":
+            missing.append(f"WHATSAPP_PROVIDER is '{self.whatsapp_provider}', must be meta or none")
 
         return missing
+
+    def zoom_configured(self) -> bool:
+        return bool(self.zoom_account_id and self.zoom_client_id and self.zoom_client_secret)
+
+    def google_configured(self) -> bool:
+        return bool(self.google_client_id and self.google_client_secret and self.google_refresh_token)
+
+    def meeting_platforms(self) -> list[str]:
+        """
+        Platforms a lead may choose from, default first. A platform counts
+        when its credentials are present, whether or not it is the default,
+        so filling in both Zoom and Google gives the lead the choice.
+        """
+        out: list[str] = []
+        if self.meeting_provider in ("zoom", "google"):
+            out.append(self.meeting_provider)
+        if self.zoom_configured() and "zoom" not in out:
+            out.append("zoom")
+        if self.google_configured() and "google" not in out:
+            out.append("google")
+        return out
+
+    def describe_bookings(self) -> str:
+        platforms = self.meeting_platforms()
+        meeting = (
+            f"meeting links via {', '.join(platforms)} (default {platforms[0]})"
+            if platforms
+            else "no meeting links (MEETING_PROVIDER=none)"
+        )
+        whatsapp = (
+            f"WhatsApp via {self.whatsapp_provider} template '{self.whatsapp_template_name}'"
+            if self.whatsapp_provider != "none"
+            else "no WhatsApp (WHATSAPP_PROVIDER=none)"
+        )
+        dash = "dashboard key set" if self.dashboard_key else "DASHBOARD_KEY unset, dashboard disabled"
+        return f"{meeting}; {whatsapp}; {dash}"
 
     # -- human readable status, printed at boot ------------------------------
 
@@ -147,7 +250,7 @@ class Settings:
     def describe_webhooks(self) -> str:
         if self.public_base_url:
             return f"webhooks -> {self.public_base_url}/api/webhooks/telephony"
-        return "no PUBLIC_BASE_URL set, falling back to status polling"
+        return "call status read from LiveKit, no webhooks needed"
 
 
 @lru_cache(maxsize=1)

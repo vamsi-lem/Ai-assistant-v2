@@ -1,31 +1,48 @@
 # Deploying
 
-Three services from one repository. About an hour, mostly pasting values you
-already have in your local `.env` files.
+Two ways to run this outside the laptop. Start with the free one; move to
+the paid one when real leads start.
 
-| Piece | Goes to | Root directory | Needs a public URL |
-|---|---|---|---|
-| `backend/` | Railway | `backend` | yes |
-| `agent/` | Railway | `agent` | no |
-| `frontend/` | Vercel | `frontend` | yes |
-| `supabase/` | already deployed | | |
+| | Free (testing and demos) | Paid (real leads, from 1,000 calls a day) |
+|---|---|---|
+| Frontend | Vercel Hobby | Vercel Hobby or Pro |
+| Backend | Render free web service, Singapore | Fly.io, Mumbai |
+| Agent | LiveKit Cloud hosted agent, Build plan | Fly.io, Mumbai (or LiveKit Cloud paid) |
+| Database | Supabase Free | Supabase Pro |
+| Cost | 0 | about $10 to $15 a month for the two machines, plus usage |
 
-Do them in this order. Each step gives you a URL the next one needs.
+Free tier limits that matter: LiveKit Build gives 1,000 agent minutes and
+1,000 SIP minutes a month (roughly 300 test calls) and up to 5 calls at
+once; the hosted agent may take 10 to 20 seconds to wake after sitting
+idle, so the first call after a quiet hour can start with a short silence.
+Render's free backend sleeps after fifteen idle minutes; section 3 has the
+keep-awake ping. Neither limit exists on the paid path.
+
+Do the steps in order. Each one produces a value the next one needs.
 
 ---
 
 ## 0. Push to GitHub
 
-From the project folder:
+Vercel and Render deploy from GitHub. LiveKit deploys from your laptop.
 
 ```powershell
 cd "D:\Lemniscate Growth\ai-voice-platform-v2"
 git init
 git add .
-git commit -m "Phase 1: browser calls working end to end"
+git status
 ```
 
-Create an empty repository on GitHub (private), then:
+Look at the list. It must contain no `.env` file from any folder, no
+`agent.log`, no `agent-log.txt`. `.gitignore` excludes them, so it will not,
+but look anyway. Then:
+
+```powershell
+git commit -m "Voice platform: calls, bookings, meetings, WhatsApp, dashboard"
+```
+
+Create an empty **private** repository on github.com (no README, no
+.gitignore, leave it empty), then:
 
 ```powershell
 git remote add origin https://github.com/YOUR-USER/ai-voice-platform-v2.git
@@ -33,149 +50,188 @@ git branch -M main
 git push -u origin main
 ```
 
-Before you push, confirm no secret is in the commit:
+Final check, must print nothing:
 
 ```powershell
 git ls-files | Select-String "\.env$"
 ```
 
-That must print nothing. `.gitignore` excludes every `.env`, so it will,
-but check anyway. The `.env.example` files are meant to be committed.
+---
+
+## 1. Backend on Render (free)
+
+`render.yaml` at the repository root describes the service, so Render
+builds it from that file.
+
+1. render.com, sign in with GitHub.
+2. **New** > **Blueprint**. Pick the repository. Render reads `render.yaml`
+   and shows one service, `lg-maya-backend`, region Singapore, plan Free.
+3. It asks for every value marked `sync: false`. Paste them from your local
+   `backend\.env`, with two exceptions:
+   - `CORS_ORIGINS`: enter `http://localhost:5173` for now. The Vercel
+     address is added in step 4.
+   - Anything you do not use (for example the Zoom values if you only use
+     Google Meet): leave blank.
+4. **Apply**. The first build takes three to five minutes.
+5. Your backend address is on the service page, like
+   `https://lg-maya-backend.onrender.com`. Open
+   `https://lg-maya-backend.onrender.com/api/health`. You want
+   `"database": "connected"`.
+6. In **Logs** you want the same startup block you see locally: `Call
+   transport phone`, `Telephony plivo ...`, `Bookings ...`, `Form brakes 5
+   per address per hour, 60 minute gap per number`.
+
+### Keep it awake
+
+The free instance sleeps after fifteen idle minutes and takes about a
+minute to wake, which a lead experiences as a broken form. Fix it with a
+free pinger:
+
+1. cron-job.org (free, no card). Create an account.
+2. **Create cronjob**: URL `https://lg-maya-backend.onrender.com/api/health`,
+   schedule every 10 minutes.
+3. Save. The backend now stays warm around the clock. Render's free
+   allowance (750 instance hours a month) covers one service running all
+   month.
 
 ---
 
-## 1. Backend on Railway
+## 2. Agent on LiveKit Cloud (free)
 
-1. **railway.app**, sign in with GitHub, **New Project**, **Deploy from GitHub
-   repo**, pick the repository.
-2. Railway creates one service. Open it, go to **Settings**.
-3. **Root Directory**: `backend`. Railway will find the Dockerfile there.
-4. **Networking**, click **Generate Domain**. Copy it. This is your backend
-   URL, something like `https://backend-production-xxxx.up.railway.app`.
-5. **Variables**, paste these. Every value except the last three is the same
-   as your local `backend\.env`:
+LiveKit runs the agent for you, next to its own media servers, and injects
+the LiveKit URL, key and secret itself. You supply everything else from
+`agent\.env`.
 
-```
-APP_ENV=production
-SUPABASE_URL=
-SUPABASE_SECRET_KEY=
-LIVEKIT_URL=
-LIVEKIT_API_KEY=
-LIVEKIT_API_SECRET=
-AGENT_API_KEY=
-CALL_TRANSPORT=browser
-TELEPHONY_ENABLED=false
-TELEPHONY_PROVIDER=plivo
-DND_CHECK_ENABLED=true
-CONSENT_WINDOW_DAYS=7
+1. Install the LiveKit CLI:
 
-PUBLIC_BASE_URL=https://the-domain-from-step-4
-CORS_ORIGINS=http://localhost:5173
-```
+   ```powershell
+   winget install LiveKit.LiveKitCLI
+   ```
 
-   Leave `PORT` out. Railway sets it. `CORS_ORIGINS` gets the Vercel URL added
-   in step 3, you do not have it yet.
+   Close and reopen the terminal afterwards.
 
-6. Railway deploys on save. Wait for the build to go green, then open
-   `https://your-backend-domain/api/health`. You want `"database": "connected"`.
+2. Link the CLI to your LiveKit Cloud project (opens the browser once):
 
----
+   ```powershell
+   lk cloud auth
+   lk project list
+   ```
 
-## 2. Agent on Railway
+   If more than one project shows, `lk project set-default "<name>"` for the
+   one the backend uses.
 
-Same project, second service.
+3. Make a secrets file from your `.env`, without the three LiveKit lines
+   (LiveKit sets those itself and refuses them in a secrets file), and with
+   the backend address from step 1:
 
-1. In the project, **New**, **GitHub Repo**, the same repository.
-2. **Settings**, **Root Directory**: `agent`.
-3. **Networking**: do NOT generate a domain. The agent dials out to LiveKit;
-   nothing dials in to it.
-4. **Variables**:
+   ```powershell
+   cd "D:\Lemniscate Growth\ai-voice-platform-v2\agent"
+   Get-Content .env | Where-Object { $_ -match '^[A-Z0-9_]+=' -and $_ -notmatch '^LIVEKIT_' } | Set-Content .env.production.local
+   notepad .env.production.local
+   ```
 
-```
-LIVEKIT_URL=
-LIVEKIT_API_KEY=
-LIVEKIT_API_SECRET=
-AGENT_API_KEY=
-SARVAM_API_KEY=
+   Change one line:
 
-LLM_PROVIDER=groq
-GROQ_API_KEY=
-GROQ_MODEL=openai/gpt-oss-120b
+   ```
+   BACKEND_BASE_URL=https://lg-maya-backend.onrender.com/api
+   ```
 
-SARVAM_STT_LANGUAGE=hi-IN
-SARVAM_STT_MODE=codemix
-SARVAM_STT_STREAM_TYPE=fast
-SARVAM_TTS_MODEL=bulbul:v3
-SARVAM_TTS_LANGUAGE=hi-IN
-SARVAM_TTS_SPEAKER=priya
-SARVAM_TTS_PACE=1.0
+   Confirm `LLM_PROVIDER=gemini` and `GEMINI_API_KEY` are set. The file name
+   ends in `.local`, so git ignores it.
 
-AGENT_NAME=Maya
-AGENT_COMPANY=Lemniscate Growth
-AGENT_FLUSH_INTERVAL_SECONDS=5
-AGENT_GENERATE_SUMMARY=true
-AGENT_ROOM_PREFIX=call-
+4. Create and deploy the agent:
 
-BACKEND_BASE_URL=https://your-backend-domain/api
-```
+   ```powershell
+   lk agent create --secrets-file .env.production.local
+   ```
 
-   `BACKEND_BASE_URL` is the step 1 domain plus `/api`. `AGENT_API_KEY` must
-   be identical to the backend's, character for character.
+   This builds the image from `agent/Dockerfile` (five to ten minutes the
+   first time; it bakes the turn detector model files in), registers the
+   agent, and writes `livekit.toml` next to the Dockerfile. Commit that
+   file; it holds the agent id, not secrets.
 
-5. The first build is slow, five to ten minutes. It installs the voice stack
-   and downloads the model files into the image. Later builds are faster.
-6. Open the service's **Logs**. You want `registered worker` with
-   `"region": "India South"`. That line means the agent is live.
+5. Watch it come up:
 
-**Stop the local agent** now. Two agents on the same LiveKit project will
-both accept calls and you will not know which one answered. Close its window
-on your laptop, or run `Get-Process python | Stop-Process -Force`.
+   ```powershell
+   lk agent status
+   lk agent logs
+   ```
+
+   In the logs you want `registered worker`. That line means Maya is live.
+
+**Now stop the local agent on your laptop.** Two agents on one LiveKit
+project both accept calls and you will not know which one answered. From
+now on run only the backend and frontend locally when you develop, or set
+a different `AGENT_ROOM_PREFIX` locally.
 
 ---
 
-## 3. Frontend on Vercel
+## 3. Frontend on Vercel (free)
 
-1. **vercel.com**, sign in with GitHub, **Add New**, **Project**, import the
+1. vercel.com, sign in with GitHub, **Add New** > **Project**, import the
    repository.
-2. **Root Directory**: click Edit, choose `frontend`.
-3. Framework preset should auto-detect **Vite**. Build command
-   `npm run build`, output directory `dist`. Leave as detected.
+2. **Root Directory**: Edit, choose `frontend`.
+3. Framework preset auto detects **Vite**. Build command `npm run build`,
+   output `dist`. Leave as detected.
 4. **Environment Variables**, one entry:
 
-```
-VITE_API_BASE_URL=https://your-backend-domain/api
-```
+   ```
+   VITE_API_BASE_URL=https://lg-maya-backend.onrender.com/api
+   ```
 
-5. **Deploy**. Two minutes. Copy the URL Vercel gives you, like
+5. **Deploy**. Two minutes. Copy the address Vercel gives you, like
    `https://ai-voice-platform-v2.vercel.app`.
 
 ---
 
 ## 4. Tell the backend about the frontend
 
-Back in Railway, backend service, **Variables**, edit `CORS_ORIGINS`:
+Render dashboard > `lg-maya-backend` > **Environment** > edit
+`CORS_ORIGINS`:
 
 ```
-CORS_ORIGINS=http://localhost:5173,https://ai-voice-platform-v2.vercel.app
+http://localhost:5173,https://ai-voice-platform-v2.vercel.app
 ```
 
-No spaces after the comma. No trailing slash on the URL. Railway redeploys
-on save.
+No spaces after the comma, no trailing slash. Save; Render redeploys.
 
-Without this the browser blocks every request with a CORS error and the
-footer says the backend is unreachable, even though it is fine.
+Without this the browser refuses every request with a CORS error and the
+page footer says the backend is unreachable, even though it is fine.
 
 ---
 
-## 5. Test
+## 5. Test from a phone, not the laptop
 
-Open the Vercel URL on your phone, not your laptop. That is the real test:
-different network, different device, nothing local involved.
+Open the Vercel address on your phone over mobile data. Different network,
+different device, nothing local involved.
 
-- Footer says **backend ok, db connected**
-- Submit the form, allow the microphone
-- Maya greets you by name
-- `conversations` in Supabase shows both roles and a summary
+- Footer says backend ok, db connected.
+- Submit the form. Your phone rings within a few seconds.
+- Maya greets you by name, asks the language, books a slot.
+- The WhatsApp with the Google Meet or Zoom link arrives.
+- Dashboard (`/#/counsellor` on the Vercel address, with `DASHBOARD_KEY`)
+  shows the booking.
+- Submit the form again with the same number: the page says the number was
+  called minutes ago and no second call is placed. That is the cooldown
+  working.
+
+Watch both services while you do it: `lk agent logs` in one window, the
+Render **Logs** tab in the browser.
+
+---
+
+## Changing something later
+
+| Change | Do |
+|---|---|
+| Code in `backend/` | `git push`; Render redeploys on its own |
+| Code in `frontend/` | `git push`; Vercel redeploys on its own |
+| Code in `agent/` | `cd agent; lk agent deploy` |
+| Backend env value | Render > Environment > edit > Save |
+| Agent env value | edit `.env.production.local`, then `lk agent update-secrets --secrets-file .env.production.local` |
+| New WhatsApp token | Render > Environment > `WHATSAPP_ACCESS_TOKEN` |
+| Restart or roll back the agent | `lk agent restart`, or `lk agent rollback` to the previous build (`lk agent --help` lists every subcommand) |
+| Read logs | `lk agent logs`; Render Logs tab |
 
 ---
 
@@ -183,46 +239,42 @@ different network, different device, nothing local involved.
 
 | Symptom | Look at |
 |---|---|
-| Footer says backend unreachable | Railway backend logs, and `CORS_ORIGINS` |
-| Health says database degraded | `SUPABASE_URL` and `SUPABASE_SECRET_KEY` on Railway |
-| Call connects, nobody speaks | Railway agent logs, same messages you saw locally |
-| `registered worker` never appears | LiveKit values on the agent service |
-| Agent says 401 fetching context | `AGENT_API_KEY` differs between the two services |
-
-The agent writes the same log lines on Railway as it did in `agent.log` on
-your laptop. Every fault we found locally would print the same way there.
-
----
-
-## Later: Plivo
-
-The phone path needs three more things on the backend service, and nothing
-on the others:
-
-```
-TELEPHONY_ENABLED=true
-CALL_TRANSPORT=phone
-PLIVO_AUTH_ID=
-PLIVO_AUTH_TOKEN=
-PLIVO_FROM_NUMBER=
-```
-
-`PUBLIC_BASE_URL` is already set to the Railway domain, which is what Plivo
-needs to fetch call instructions. No ngrok in production. Follow
-`docs/PLIVO-SETUP.md` from Stage 1.
+| Footer says backend unreachable | Render logs, `CORS_ORIGINS`, and whether the instance is asleep (first request after idle takes a minute) |
+| Health says database degraded | `SUPABASE_URL` and `SUPABASE_SECRET_KEY` on Render |
+| Form accepted, phone never rings | Render logs for the Plivo line; `PLIVO_*` and `LIVEKIT_SIP_TRUNK_ID` |
+| Phone rings, silence for ten seconds, then Maya | hosted agent waking from idle; free plan behaviour |
+| Phone rings, nobody ever speaks | `lk agent logs`, same messages you saw locally |
+| `registered worker` never appears | `lk agent status`; rebuild with `lk agent deploy` |
+| Agent says 401 fetching context | `AGENT_API_KEY` differs between Render and the agent secrets |
+| Page says "too many submissions" while testing | `LEAD_MAX_PER_IP_PER_HOUR` on Render; raise for the day, or wait an hour |
+| Second call to the same number skipped | `LEAD_PHONE_COOLDOWN_MINUTES`; set 0 on Render to disable while testing |
+| Calls stop mid month | LiveKit Build plan minutes used up; dashboard > Usage |
 
 ---
 
-## Cost
+## Later: the paid path (Fly.io, Mumbai)
 
-| Service | Plan | Roughly |
-|---|---|---|
-| Railway | Hobby, two services | $5/month base plus usage, typically $10 to $15 |
-| Vercel | Hobby | free |
-| Supabase | Free | free until 500 MB |
-| LiveKit | Build | free to 1,000 agent minutes, then a hard stop |
-| Groq | free tier | free at test volumes |
-| Sarvam | pay as you go | about 6 to 7 rupees per three-minute call |
+When real leads start, move the backend and the agent to Fly.io in Mumbai.
+Every hop of the audio path then stays inside India (Plivo, LiveKit's India
+region, Sarvam, your machines), the agent never sleeps, and there are no
+monthly minute caps beyond what you pay for. `backend/fly.toml` and
+`agent/fly.toml` are ready for it.
 
-The first real cost decision is LiveKit's Scale plan for region pinning,
-which is only needed for the phone path. Nothing in this guide touches it.
+1. Install Fly: `pwsh -Command "iwr https://fly.io/install.ps1 -useb | iex"`,
+   then `fly auth signup` (card required).
+2. Backend, from `backend`: `fly apps create lg-maya-backend`, copy `.env`
+   to `.env.production.local` with `APP_ENV=production`, then
+   `Get-Content .env.production.local | Where-Object { $_ -match '^[A-Z0-9_]+=' } | fly secrets import --stage`
+   and `fly deploy`. Address: `https://lg-maya-backend.fly.dev`.
+3. Agent, from `agent`: `fly apps create lg-maya-agent`, same secrets
+   import (this time keep the `LIVEKIT_` lines, Fly does not inject them),
+   `BACKEND_BASE_URL` pointing at the Fly backend, `fly deploy`. Then
+   remove the hosted one (`lk agent delete`, see `lk agent --help`) so only
+   one agent answers.
+4. Vercel: change `VITE_API_BASE_URL` to the Fly backend and redeploy.
+5. Render: delete the service, and the cron-job.org ping.
+
+The rest of the hardening list applies at the same time: paid Gemini with
+OpenAI fallback, paid Sarvam, LiveKit and Plivo plans with concurrency
+checked, a permanent WhatsApp token, Supabase Pro, monitoring, and a load
+test.

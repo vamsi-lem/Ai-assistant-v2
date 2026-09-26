@@ -53,11 +53,38 @@ async def require_agent_key(x_agent_key: str | None = Header(default=None)) -> N
         )
 
 
+async def require_dashboard_key(x_dashboard_key: str | None = Header(default=None)) -> None:
+    """
+    Guard for the counsellor dashboard endpoints.
+
+    Same shape as the agent guard: a shared secret in a header, constant
+    time comparison, and an unset secret means the door is closed, not open.
+    The dashboard page asks the counsellor for it once and keeps it in the
+    browser session.
+    """
+    settings = get_settings()
+    expected = settings.dashboard_key
+
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="DASHBOARD_KEY is not set in backend/.env, so the dashboard is disabled.",
+        )
+
+    supplied = (x_dashboard_key or "").strip()
+    ok = len(supplied) == len(expected) and hmac.compare_digest(supplied, expected)
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Wrong dashboard key.",
+        )
+
+
 def client_ip(request: Request) -> str | None:
     """
     Best-effort caller IP, stored as consent evidence.
 
-    Behind Railway or Vercel the socket address is a proxy, so the real client
+    Behind Render, Fly or Vercel the socket address is a proxy, so the real client
     is the first entry in X-Forwarded-For. This is evidence, not security: a
     client can forge the header, which is fine because its job is to show good
     faith in a complaint, not to authenticate anyone.
