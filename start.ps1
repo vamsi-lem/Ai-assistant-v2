@@ -171,7 +171,7 @@ Start-Process powershell -ArgumentList @(
   '-NoExit', '-Command',
   "Set-Location '$root\frontend'; Write-Host 'FRONTEND' -ForegroundColor Cyan; npm run dev"
 )
-Ok "frontend -> http://localhost:5173"
+Ok "frontend -> http://localhost:3000/form (dashboard at /login)"
 
 Write-Host "`n"
 Write-Host "==============================================================" -ForegroundColor White
@@ -187,12 +187,11 @@ Write-Host @"
      wants  a line containing 'registered worker'
      if not, read the error, it names the problem
 
-  3. http://localhost:5173
+  3. http://localhost:3000/form
      wants  the footer to say  backend ok - db connected
 
-  Then submit the form with your own details, tick the consent box, allow
-  the microphone, and click 'Turn on sound' if it asks. Maya should greet
-  you by name.
+  Then submit the form with your own details and tick the consent box.
+  Your phone rings and Maya greets you by name.
 
   Afterwards, in Supabase, open the conversations table and look at the
   messages column. You want BOTH 'assistant' and 'user' entries. That is

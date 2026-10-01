@@ -68,10 +68,12 @@ async def check_db() -> tuple[bool, str]:
     all work without reading any lead data.
     """
     try:
-        await db().table("leads").select("id").limit(1).execute()
+        await execute(db().table("leads").select("id").limit(1))
         return True, "connected"
     except Exception as exc:  # noqa: BLE001 - health check must never raise
-        return False, str(exc)
+        # httpx transport errors often carry no message; name the class so
+        # the footer never shows a blank reason.
+        return False, str(exc) or f"{type(exc).__name__} talking to Supabase"
 
 
 # ---------------------------------------------------------------------------

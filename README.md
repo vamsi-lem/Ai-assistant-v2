@@ -5,7 +5,7 @@ their phone, speaks their language (English, Hindi or Telugu), books a
 counselling slot, sends the Google Meet or Zoom link on WhatsApp, and
 writes the whole conversation to the counsellor dashboard.
 
-Stack: **FastAPI** backend, **Python LiveKit agent**, **React** frontend,
+Stack: **FastAPI** backend, **Python LiveKit agent**, **Next.js** frontend,
 **Supabase** (Postgres). Voice by **Sarvam** (speech to text, text to
 speech), brain by **Gemini** (switchable to OpenAI, Groq or Sarvam),
 telephony by **Plivo** through LiveKit SIP, meetings by **Google Calendar**
@@ -24,7 +24,7 @@ and **Zoom**, messages by **Meta WhatsApp Cloud API**.
 ## One call, start to finish
 
 ```
-Lead submits the form (React on Vercel)
+Lead submits the form (Next.js on Vercel, /form)
         |
         v
 Backend saves the lead                         always first, before any call
@@ -34,7 +34,8 @@ Backend saves the lead                         always first, before any call
 Backend creates the call record                fixes the room name: call-<id>
         |
         +-- phone path:   LiveKit dials the lead through Plivo's SIP trunk
-        +-- browser path: the browser joins the room with a short lived token
+        +-- (CALL_TRANSPORT=browser exists in the backend for carrier-free
+        |    testing; the dashboard has no browser call panel, phone only)
         |
         v
 Agent joins the room, reads the call id from the room name,
@@ -50,7 +51,8 @@ book_slot -> backend saves the booking, creates the Meet or Zoom link,
         |
         v
 Transcript written to Supabase every 5 seconds and again on hangup,
-with a short summary for the counsellor
+with a summary, a score out of 100, the intent and the facts Maya heard
+(course, intake, budget, objections), all on the lead page
 ```
 
 ---
@@ -85,12 +87,17 @@ ai-voice-platform-v2/
 │   ├── app/
 │   │   ├── main.py              app, CORS, startup report
 │   │   ├── config.py            every setting, read once from .env
-│   │   ├── deps.py              agent key and dashboard key guards
+│   │   ├── deps.py              agent key guard
+│   │   ├── auth.py              dashboard sign in: Supabase token check, roles from profiles
 │   │   ├── throttle.py          brakes on the public form
 │   │   ├── db.py                Supabase client with retries
 │   │   ├── schemas.py           request and response models
-│   │   ├── routers/             leads, calls, conversations, bookings, webhooks, health
+│   │   ├── routers/             leads, calls, conversations, bookings, dashboard, settings, team, webhooks, health
 │   │   └── services/
+│   │       ├── calling.py            the one way a call is placed (form, call again)
+│   │       ├── events.py             the lead timeline
+│   │       ├── scope.py              who may see which leads
+│   │       ├── scoring.py            code rules above the model's lead score
 │   │       ├── livekit_service.py    room naming, join tokens
 │   │       ├── telephony/            Plivo behind one interface
 │   │       ├── meetings/             Google Meet and Zoom behind one interface
@@ -113,13 +120,14 @@ ai-voice-platform-v2/
 │   ├── fly.toml                 paid path settings
 │   └── .env.example             every agent setting, explained
 │
-├── frontend/                    React + Vite: lead form, call panel, counsellor dashboard
+├── frontend/                    Next.js: public lead form (/form) and the counsellor dashboard
+│   ├── README.md                screens, roles, the three env values
 │   └── src/
-│       ├── App.tsx
-│       ├── api/client.ts        the only place the backend URL appears
-│       └── components/          LeadForm, CallPanel, CounsellorDashboard
+│       ├── app/                 form, login, dashboard, leads, calls, appointments, analytics, settings
+│       ├── lib/api/             one file per backend area; client.ts is the only place the URL appears
+│       └── components/
 │
-├── supabase/migrations/         0001 leads, calls, conversations; 0002 bookings
+├── supabase/migrations/         0001 leads, calls, conversations; 0002 bookings; 0003 users, stages, notes, events; 0004 views and counts; 0005 view permissions
 ├── docs/                        SETUP, PHONE, BOOKINGS, DEPLOY, MULTI-TENANT
 ├── render.yaml                  free tier backend (docs/DEPLOY.md)
 ├── setup.ps1                    one time laptop setup
@@ -157,8 +165,9 @@ ai-voice-platform-v2/
 - `is_on_dnd()` returns False for every number. The backend warns at every
   startup. Wire in a DND registry check before calling numbers outside a
   test list.
-- The dashboard is behind a single shared key. Fine for one counsellor;
-  add real login with roles before a team uses it.
+- Dashboard emails (invitations, password resets) go through Supabase's
+  built in mailer, which allows only a few an hour. Set custom SMTP in
+  Supabase before a real team is invited.
 - No monitoring or alerting yet. `GET /api/health` reports the database
   and each integration; point an uptime monitor at it.
 - The LLM fallback (OpenAI behind Gemini) is planned, not wired.

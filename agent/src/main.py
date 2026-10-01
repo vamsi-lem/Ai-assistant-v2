@@ -233,17 +233,26 @@ class Transcript:
         self._dirty = True
 
     async def flush(
-        self, *, summary: str | None = None, call_status: str | None = None
+        self,
+        *,
+        summary: str | None = None,
+        call_status: str | None = None,
+        score: int | None = None,
+        intent: str | None = None,
+        extraction: dict[str, Any] | None = None,
     ) -> None:
         """Serialised, so two flushes can never interleave and write out of order."""
         async with self._lock:
-            if not self._dirty and summary is None and call_status is None:
+            if not self._dirty and summary is None and call_status is None and score is None:
                 return
             await self._backend.store_conversation(
                 call_id=self._call_id,
                 messages=list(self._turns),
                 summary=summary,
                 call_status=call_status,
+                score=score,
+                intent=intent,
+                extraction=extraction,
             )
             self._dirty = False
 
@@ -343,6 +352,8 @@ class Assistant(Agent):
         # Video platforms the backend can make links on, default first, and
         # whether the lead has been asked to choose between them.
         self._platforms = [p for p in (context.get("meeting_platforms") or []) if p in _PLATFORM_LABELS]
+        # Background writes (language report) kept alive until they finish.
+        self._background: set[asyncio.Task] = set()
         self._platform_asked = False
         # Turns since the language was chosen. In the first couple, a bare
         # language name ("English") corrects a wrong choice without the lead
@@ -384,6 +395,11 @@ class Assistant(Agent):
         self.language_chosen = True
         self._turns_since_choice = 0
         await self.update_instructions(build_instructions(self._context, code))
+        # The dashboard shows which language the lead chose. Fire and forget:
+        # a slow write must never hold up the next reply.
+        task = asyncio.create_task(self._backend.save_callback(lead_id=self.lead_id, preferred_language=code))
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
         if turn_ctx is not None:
             turn_ctx.add_message(
                 role="system",
@@ -916,8 +932,67 @@ def build_llm():
     return openai_plugin.LLM(model=config.openai_model, api_key=config.openai_api_key)
 
 
-async def generate_summary(session: AgentSession, turns: list[dict[str, Any]]) -> str | None:
-    """Closing summary for the CRM record. Best effort; never costs the transcript."""
+class CallRead:
+    """What Maya learned on the call, as the backend stores it."""
+
+    def __init__(
+        self,
+        summary: str | None,
+        score: int | None = None,
+        intent: str | None = None,
+        extraction: dict[str, Any] | None = None,
+    ) -> None:
+        self.summary = summary
+        self.score = score
+        self.intent = intent
+        self.extraction = extraction
+
+
+def _parse_call_read(text: str) -> CallRead:
+    """
+    The brain is asked for one JSON object. Models still wrap it in code
+    fences or add a sentence now and then, so find the outermost braces and
+    try that; if nothing parses, keep the text as a plain summary rather
+    than lose it.
+    """
+    import json
+
+    candidate = text.strip()
+    start, end = candidate.find("{"), candidate.rfind("}")
+    if start != -1 and end > start:
+        try:
+            data = json.loads(candidate[start : end + 1])
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            summary = data.get("summary")
+            if isinstance(summary, (list, tuple)):
+                summary = "\n".join(str(line) for line in summary)
+            score: int | None
+            try:
+                score = int(round(float(data.get("score"))))  # type: ignore[arg-type]
+                score = max(0, min(100, score))
+            except (TypeError, ValueError):
+                score = None
+            intent = data.get("intent")
+            facts = data.get("facts") if isinstance(data.get("facts"), dict) else {}
+            extraction = {k: v for k, v in facts.items() if v not in (None, "", "null")}
+            if isinstance(data.get("interest"), str):
+                extraction["interest"] = data["interest"]
+            return CallRead(
+                summary=str(summary).strip() if summary else None,
+                score=score,
+                intent=str(intent).strip()[:200] if intent else None,
+                extraction=extraction,
+            )
+    return CallRead(summary=candidate or None)
+
+
+async def generate_summary(session: AgentSession, turns: list[dict[str, Any]]) -> CallRead | None:
+    """
+    Closing read for the CRM record: summary, score, intent, facts. Best
+    effort; never costs the transcript, which is stored either way.
+    """
     if not turns:
         return None
 
@@ -938,7 +1013,11 @@ async def generate_summary(session: AgentSession, turns: list[dict[str, Any]]) -
                 chunks.append(delta)
 
         text = "".join(chunks).strip()
-        return text or None
+        if not text:
+            return None
+        read = _parse_call_read(text)
+        logger.info("Call read: score=%s intent=%r facts=%s", read.score, read.intent, read.extraction)
+        return read
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not generate summary: %s", exc)
         return None
@@ -947,6 +1026,31 @@ async def generate_summary(session: AgentSession, turns: list[dict[str, Any]]) -
 # ---------------------------------------------------------------------------
 # One call
 # ---------------------------------------------------------------------------
+
+
+_config_reported = False
+
+
+async def _report_config_once(backend: BackendClient) -> None:
+    """Tell the backend how this agent is set up, once per worker process."""
+    global _config_reported
+    if _config_reported:
+        return
+    _config_reported = True
+    await backend.report_config(
+        {
+            "agent_name": config.agent_name,
+            "company": config.agent_company,
+            "flow": config.flow,
+            "languages": list(config.offered_languages),
+            "greeting_language": config.greeting_language,
+            "tts_model": config.tts_model,
+            "tts_speaker": config.tts_speaker,
+            "llm_provider": config.llm_provider,
+            "llm_model": config.llm_label().split(":", 1)[-1],
+            "counsellor_hours": config.counsellor_hours,
+        }
+    )
 
 
 @server.rtc_session()
@@ -968,6 +1072,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
     ctx.log_context_fields = {"room": room_name, "call_id": call_id}
     backend = BackendClient()
+    await _report_config_once(backend)
 
     try:
         context = await backend.fetch_call_context(call_id)
@@ -1192,11 +1297,17 @@ async def entrypoint(ctx: JobContext) -> None:
             if task is not None:
                 task.cancel()
 
-        summary = None
+        read: CallRead | None = None
         if config.generate_summary:
-            summary = await generate_summary(session, transcript.turns)
+            read = await generate_summary(session, transcript.turns)
 
-        await transcript.flush(summary=summary, call_status="completed")
+        await transcript.flush(
+            summary=read.summary if read else None,
+            call_status="completed",
+            score=read.score if read else None,
+            intent=read.intent if read else None,
+            extraction=read.extraction if read else None,
+        )
         await backend.close()
         logger.info("Call %s ended, %d turn(s) stored", call_id, len(transcript.turns))
 

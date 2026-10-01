@@ -100,13 +100,17 @@ class BackendClient:
         messages: list[dict[str, Any]],
         summary: str | None = None,
         call_status: str | None = None,
+        score: int | None = None,
+        intent: str | None = None,
+        extraction: dict[str, Any] | None = None,
     ) -> None:
         """
         Persist the transcript.
 
         Sends the COMPLETE turn list every time. The backend replaces rather
         than appends, so a retried or duplicated flush can never double up a
-        turn. That is worth slightly more bytes on the wire.
+        turn. That is worth slightly more bytes on the wire. The score,
+        intent and extraction travel once, with the final flush.
         """
         session = await self._ensure()
         url = f"{config.backend_base_url}/conversations"
@@ -116,6 +120,12 @@ class BackendClient:
             payload["summary"] = summary
         if call_status is not None:
             payload["call_status"] = call_status
+        if score is not None:
+            payload["score"] = score
+        if intent is not None:
+            payload["intent"] = intent
+        if extraction is not None:
+            payload["extraction"] = extraction
 
         async with session.post(url, json=payload) as response:
             if response.status >= 400:
@@ -186,12 +196,14 @@ class BackendClient:
         lead_id: str,
         callback_time: str | None = None,
         callback_notes: str | None = None,
+        preferred_language: str | None = None,
     ) -> bool:
         """
-        Record when a counsellor should ring back, and anything the lead
-        asked that Maya could not answer. Written the moment it is known,
-        not at the end of the call, so a dropped line does not lose it.
-        Returns True on success; never raises into the conversation.
+        Record when a counsellor should ring back, anything the lead asked
+        that Maya could not answer, and the language they chose. Written the
+        moment it is known, not at the end of the call, so a dropped line
+        does not lose it. Returns True on success; never raises into the
+        conversation.
         """
         session = await self._ensure()
         url = f"{config.backend_base_url}/leads/{lead_id}/callback"
@@ -201,6 +213,8 @@ class BackendClient:
             payload["callback_time"] = callback_time
         if callback_notes is not None:
             payload["callback_notes"] = callback_notes
+        if preferred_language is not None:
+            payload["preferred_language"] = preferred_language
 
         try:
             async with session.patch(url, json=payload) as response:
@@ -217,3 +231,21 @@ class BackendClient:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not save callback for lead %s: %s", lead_id, exc)
             return False
+
+
+    # -- housekeeping -------------------------------------------------------
+
+    async def report_config(self, report: dict[str, Any]) -> None:
+        """
+        Tell the backend how this agent is configured (name, languages,
+        voice, brain) so the dashboard can show it. Best effort, once per
+        worker process; a failure is logged and nothing else.
+        """
+        session = await self._ensure()
+        url = f"{config.backend_base_url}/agent/config"
+        try:
+            async with session.post(url, json=report) as response:
+                if response.status >= 400:
+                    logger.warning("Backend refused the config report: %s %s", response.status, (await response.text())[:200])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not report config to the backend: %s", exc)

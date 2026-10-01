@@ -22,16 +22,18 @@ Nothing in steps 1 to 6 needs a phone number, a carrier, or any money.
 ## Step 1. Supabase project and tables
 
 1. Create a project at **supabase.com**. Region **Mumbai (ap-south-1)**.
-2. Open **SQL Editor**, paste the whole of `supabase/migrations/0001_init.sql`,
-   and run it.
+2. Open **SQL Editor** and run, one after the other, the whole of
+   `supabase/migrations/0001_init.sql`, `0002_bookings.sql`,
+   `0003_dashboard.sql`, `0004_dashboard_views.sql` and `0005_lock_views.sql`.
 3. Go to **Settings → API** and copy three values:
    - Project URL
-   - `anon` public key (the frontend never actually needs it in this build, but
-     keep it)
+   - `anon` public key (the frontend uses it to sign users in)
    - the **secret** key, labelled service role
 
-**Check:** the Table Editor shows `leads`, `calls` and `conversations`, all
-three with a green shield icon meaning row level security is on.
+**Check:** the Table Editor shows `leads`, `calls`, `conversations`,
+`bookings`, `profiles`, `lead_notes`, `lead_events` and `app_settings`, all
+with a green shield icon meaning row level security is on, and no view is
+tagged "Unrestricted" (0005 takes care of that).
 
 > The shield matters. Those tables deny the anon key everything, so a leaked
 > frontend key cannot read a single lead. Only the backend and the agent, using
@@ -102,20 +104,61 @@ In a second terminal:
 ```powershell
 cd "D:\Lemniscate Growth\ai-voice-platform-v2\frontend"
 npm install
-copy .env.example .env
+copy .env.example .env.local
 npm run dev
 ```
 
-`.env` needs one line, and the default is already right for local work:
+`.env.local` needs three lines. The first is already right for local work;
+the other two come from the Supabase dashboard (Project Settings > API) and
+are only used to sign in:
 
 ```
-VITE_API_BASE_URL=http://localhost:8000/api
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000/api
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon public key>
 ```
 
-**Check:** open <http://localhost:5173>. The form renders, and the footer says
-`backend ok · db connected`. If the footer says "backend unreachable", the
-backend is not running or `CORS_ORIGINS` does not include
-`http://localhost:5173`.
+The anon key is Supabase's public browser key, built to be shipped in a
+frontend. The secret key stays in `backend/.env` and never goes here.
+
+**Check:** open <http://localhost:3000/form>. The form renders, and the footer
+says `backend ok · db connected`. If the footer says "backend unreachable",
+the backend is not running or `CORS_ORIGINS` does not include
+`http://localhost:3000`. The dashboard is at <http://localhost:3000> and needs
+a login, which the next step creates.
+
+---
+
+## Step 3b. The first dashboard user
+
+Team members are invited from the dashboard's Team tab, but the very first
+admin has to be created by hand, once.
+
+1. Supabase → **Authentication → Users → Add user → Create new user**. Enter
+   your email and a password, tick **Auto Confirm User**, create.
+2. Migration 0003 gave that user a profile with the counsellor role. Make it
+   admin in **SQL Editor**:
+
+   ```sql
+   update public.profiles set role = 'admin', name = 'Your Name'
+   where email = 'you@example.com';
+   ```
+
+3. Supabase → **Authentication → URL Configuration**: set **Site URL** to
+   `http://localhost:3000` and add `http://localhost:3000/set-password` under
+   **Redirect URLs**. Invitation and password reset links land there. When
+   the dashboard moves to Vercel, add the Vercel address the same way.
+4. Restart the backend (it needs the `PyJWT` package from the updated
+   `requirements.txt`: `pip install -r requirements.txt` in `backend`).
+
+**Check:** open <http://localhost:3000>, sign in with that email and password.
+The dashboard opens with your name and ADMIN in the top right. Settings →
+Team lists you. Invite a second person with your other email address to see
+the invitation flow end to end.
+
+> Supabase's built in mailer is meant for testing: it sends only a few
+> emails an hour. Before inviting a real team, set custom SMTP under
+> **Authentication → Emails** (Resend and Brevo both have free tiers).
 
 ---
 

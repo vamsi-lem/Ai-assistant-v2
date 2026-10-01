@@ -69,21 +69,78 @@ class LeadOut(BaseModel):
     notes: str | None = None
     source: str
     status: str
+    stage: str = "new"
+    score: int | None = None
+    assigned_to: str | None = None
+    assigned_name: str | None = None
+    preferred_language: str | None = None
+    callback_time: str | None = None
+    callback_notes: str | None = None
     consent_given: bool
     consent_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime | None = None
+    # From the lead_overview view (migration 0004); absent on a bare row.
+    last_call_at: datetime | None = None
+    calls_count: int = 0
+    next_booking_at: datetime | None = None
+
+
+class LeadPage(BaseModel):
+    items: list[LeadOut]
+    total: int
+
+
+class LeadPatch(BaseModel):
+    """What the dashboard may change on a lead."""
+
+    stage: str | None = None
+    # A profile id, or null to send the lead back to the incoming queue.
+    assigned_to: str | None = None
+    # Distinguishes "leave as is" from "set to unassigned".
+    model_config = {"extra": "forbid"}
+
+
+class ManualLeadCreate(LeadCreate):
+    """A lead typed in by the team. Source manual, never auto called."""
+
+    assigned_to: str | None = None
+
+
+class NoteCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=4000)
+
+
+class NoteOut(BaseModel):
+    id: str
+    lead_id: str
+    author_id: str | None = None
+    author_name: str | None = None
+    body: str
+    created_at: datetime
+
+
+class EventOut(BaseModel):
+    id: str
+    lead_id: str
+    kind: str
+    data: dict[str, Any] = {}
+    actor_name: str | None = None
     created_at: datetime
 
 
 class LeadCallbackUpdate(BaseModel):
     """
-    What the agent captured during the call. Either field may be absent; a
+    What the agent captured during the call. Every field may be absent; a
     call that ends before a time is agreed still records what was learned.
-    Stored by appending to the lead's existing notes column, so no schema
-    change is needed.
+    Callback details are appended to the lead's notes column; the language
+    the lead chose is stored in its own column.
     """
 
     callback_time: str | None = Field(default=None, max_length=200)
     callback_notes: str | None = Field(default=None, max_length=2000)
+    # Sarvam language code the lead chose on the call, for example te-IN.
+    preferred_language: str | None = Field(default=None, max_length=10)
 
 
 class LeadCreateResponse(BaseModel):
@@ -128,6 +185,44 @@ class CallStatusOut(BaseModel):
     summary: str | None = None
 
 
+class CallRow(BaseModel):
+    """One row of the call_overview view (migration 0004)."""
+
+    id: str
+    lead_id: str
+    lead_name: str
+    lead_phone: str
+    status: str
+    transport: str
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    duration_seconds: int | None = None
+    error: str | None = None
+    summary: str | None = None
+    score: int | None = None
+    intent: str | None = None
+    extraction: dict[str, Any] | None = None
+    turns: int = 0
+    created_at: datetime
+
+
+class CallDetailOut(CallRow):
+    transcript: list[dict[str, Any]] = []
+
+
+class CallPage(BaseModel):
+    items: list[CallRow]
+    total: int
+
+
+class LeadDetailOut(BaseModel):
+    lead: LeadOut
+    calls: list[CallDetailOut]
+    bookings: list["BookingRow"]
+    notes: list[NoteOut]
+    events: list[EventOut]
+
+
 # ---------------------------------------------------------------------------
 # Conversations - written by the agent, not the browser
 # ---------------------------------------------------------------------------
@@ -152,6 +247,13 @@ class ConversationUpsert(BaseModel):
     # Lets the agent move the call along in the same request, saving a round
     # trip on a path where every millisecond is inside a live call.
     call_status: str | None = None
+
+    # The structured end of call read (agent/src/prompts.py SUMMARY_PROMPT).
+    # Sent once, with the final flush. The backend applies its own rules on
+    # top of the score (services/scoring.py) before storing it.
+    score: int | None = Field(default=None, ge=0, le=100)
+    intent: str | None = Field(default=None, max_length=200)
+    extraction: dict[str, Any] | None = None
 
 
 class ConversationOut(BaseModel):
@@ -232,7 +334,7 @@ class BookingCreateResponse(BaseModel):
 
 
 class BookingRow(BaseModel):
-    """One row of the counsellor dashboard (the upcoming_bookings view)."""
+    """One row of the upcoming_bookings view."""
 
     id: str
     scheduled_at: datetime
@@ -244,6 +346,7 @@ class BookingRow(BaseModel):
     meeting_error: str | None = None
     whatsapp_status: str
     whatsapp_error: str | None = None
+    whatsapp_sent_at: datetime | None = None
     requested_text: str | None = None
     notes: str | None = None
     lead_id: str
@@ -252,6 +355,107 @@ class BookingRow(BaseModel):
     lead_email: str | None = None
     product_or_course: str
     call_id: str | None = None
+    counsellor_id: str | None = None
+    counsellor_name: str | None = None
+    created_at: datetime
+
+
+class DashboardBookingCreate(BaseModel):
+    """A slot booked by the team from the Appointments page."""
+
+    lead_id: str
+    counsellor_id: str
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")   # YYYY-MM-DD in the booking timezone
+    time: str = Field(pattern=r"^\d{2}:\d{2}$")            # HH:MM, 24 hour, booking timezone
+    mode: Literal["video", "phone"] = "video"
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class AvailabilityOut(BaseModel):
+    date: str
+    slots: list[str]
+    taken: list[str]
+    slot_minutes: int
+    timezone: str
+
+
+# ---------------------------------------------------------------------------
+# Dashboard and analytics
+# ---------------------------------------------------------------------------
+
+
+class DashboardCounts(BaseModel):
+    leads: int = 0
+    qualified: int = 0
+    appointments_today: int = 0
+    converted: int = 0
+    calls_today: int = 0
+
+
+class DashboardOut(BaseModel):
+    scope: Literal["all", "mine"]
+    counts: DashboardCounts
+    queue: list[LeadOut]
+    today: list[BookingRow]
+
+
+class AnalyticsOut(BaseModel):
+    total: int = 0
+    converted: int = 0
+    conversion_rate: int = 0
+    funnel: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    calls: list[dict[str, Any]] = []
+    top_source: str | None = None
+
+
+class VoiceSettingsOut(BaseModel):
+    agent_name: str = ""
+    company: str = ""
+    flow: str = ""
+    languages: list[str] = []
+    greeting_language: str = ""
+    tts_model: str = ""
+    tts_speaker: str = ""
+    llm_provider: str = ""
+    llm_model: str = ""
+    counsellor_hours: str = ""
+    booking_timezone: str = ""
+    meeting_provider: str = ""
+    whatsapp_template: str = ""
+    call_transport: str = ""
+    # When the agent last reported its configuration, if ever.
+    agent_reported_at: datetime | None = None
+
+
+class AgentConfigReport(BaseModel):
+    """What the agent posts about itself at startup."""
+
+    agent_name: str = ""
+    company: str = ""
+    flow: str = ""
+    languages: list[str] = []
+    greeting_language: str = ""
+    tts_model: str = ""
+    tts_speaker: str = ""
+    llm_provider: str = ""
+    llm_model: str = ""
+    counsellor_hours: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Team
+# ---------------------------------------------------------------------------
+
+
+class ProfileOut(BaseModel):
+    """A dashboard user. The role decides what the backend lets them see."""
+
+    id: str
+    email: str
+    name: str
+    role: str
+    active: bool
     created_at: datetime
 
 
@@ -271,3 +475,4 @@ class HealthOut(BaseModel):
 
 
 LeadCreateResponse.model_rebuild()
+LeadDetailOut.model_rebuild()

@@ -294,17 +294,41 @@ def idle_close_line(code: str) -> str:
     return IDLE_CLOSE.get(code, IDLE_CLOSE["en-IN"])
 
 
-SUMMARY_PROMPT = """You are summarising a recorded enquiry call for an internal CRM record.
+SUMMARY_PROMPT = """You are reading the transcript of a recorded enquiry call and writing the
+record a counsellor will see. Reply with ONE JSON object and nothing else, no
+prose before or after it, no code fences. Use exactly these keys:
 
-Write four short sections with these exact headings, and nothing else:
+{
+  "summary": "four short lines, each starting with its heading:
+              Outcome: one sentence on how the call ended.
+              Interest: what the lead actually wants, in their own words.
+              Questions raised: what they asked that was not fully answered, or None.
+              Next step: the single most sensible follow up action, or None.",
+  "score": 0 to 100 (integer),
+  "interest": "hot" | "warm" | "cold",
+  "intent": "one short phrase, e.g. wants fees for B.Sc Nursing, or not interested",
+  "facts": {
+    "course": "what they asked about, or null",
+    "intake": "when they want to start, or null",
+    "budget": "anything said about money, or null",
+    "city": "where they are, or null",
+    "objections": "doubts or blockers they raised, or null",
+    "best_time_to_call": "if they said one, or null"
+  }
+}
 
-Outcome: one sentence on how the call ended.
-Interest: what the lead actually wants, in their own words.
-Questions raised: what they asked that was not fully answered, or "None".
-Next step: the single most sensible follow-up action, or "None".
+Scoring guide. Start from 40. Move up for: the lead engaged and asked
+questions (+10), confirmed interest in a specific course (+15), gave a
+timeline or intake (+10), gave a budget or said fees are fine (+10), agreed
+to a counselling slot (+15). Move down for: said not interested (-30), wrong
+number or wrong person (score 0), asked not to be called (score 0), hung up
+in the first exchanges without engaging (-20). Clamp to 0 to 100. Hot is 70
+and above, warm is 40 to 69, cold is below 40.
 
-Write the summary in English regardless of the call's language.
-Be factual. Record only what was said. Do not infer enthusiasm, budget or
-intent that was not stated. If the call was too short to judge, say so plainly.
-Ignore any lines that are clearly background noise or transcription errors.
+Write everything in English regardless of the call's language. Be factual.
+Record only what was said. Do not infer enthusiasm, budget or intent that
+was not stated. If the call was too short to judge, say so in the summary
+and score it 20. Ignore lines that are clearly background noise or
+transcription errors. Every string value must be a plain string; use null,
+not an empty string, for unknown facts.
 """

@@ -14,9 +14,10 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from ..db import find_one, get_by_id, insert_one, update_by_id
+from ..db import db, execute, find_one, get_by_id, insert_one, update_by_id
 from ..deps import require_agent_key
 from ..schemas import ConversationOut, ConversationUpsert
+from ..services import events, scoring
 
 logger = logging.getLogger("backend.conversations")
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
@@ -73,10 +74,36 @@ async def upsert_conversation(payload: ConversationUpsert) -> ConversationOut:
             detail="Could not store the transcript.",
         )
 
+    # ---- What Maya learned: score, intent, facts ----------------------------
+    # Sent once with the final flush. The code rules in services/scoring.py
+    # sit above the model's number: a booking floors it, do-not-call zeroes it.
+    if payload.score is not None or payload.intent is not None or payload.extraction is not None:
+        lead = await get_by_id("leads", call["lead_id"]) or {}
+        booked = await execute(
+            db().table("bookings").select("id").eq("lead_id", call["lead_id"]).eq("status", "booked").limit(1)
+        )
+        score = scoring.apply_rules(
+            scoring.clamp(payload.score),
+            has_booking=bool(booked.data),
+            do_not_call=lead.get("status") == "do_not_call",
+        )
+        call_patch: dict = {}
+        if score is not None:
+            call_patch["score"] = score
+        if payload.intent is not None:
+            call_patch["intent"] = payload.intent.strip()[:200]
+        if payload.extraction is not None:
+            call_patch["extraction"] = payload.extraction
+        if call_patch:
+            await update_by_id("calls", payload.call_id, call_patch)
+        if score is not None:
+            # The lead carries the latest conversation's score.
+            await update_by_id("leads", call["lead_id"], {"score": score})
+
     # The agent can advance the call in the same request, saving a round trip
     # on a path that runs during a live conversation.
     if payload.call_status:
-        call_patch: dict = {"status": payload.call_status}
+        call_patch = {"status": payload.call_status}
         if payload.call_status in LEAD_STATUS_FOR_CALL:
             call_patch["ended_at"] = datetime.now(timezone.utc).isoformat()
 
@@ -84,7 +111,21 @@ async def upsert_conversation(payload: ConversationUpsert) -> ConversationOut:
 
         lead_status = LEAD_STATUS_FOR_CALL.get(payload.call_status)
         if lead_status:
-            await update_by_id("leads", call["lead_id"], {"status": lead_status})
+            lead_patch: dict = {"status": lead_status}
+            # A completed conversation moves a fresh lead to Contacted on the
+            # board; a counsellor can move it anywhere from there.
+            if lead_status == "contacted":
+                lead = await get_by_id("leads", call["lead_id"]) or {}
+                if lead.get("stage") == "new":
+                    lead_patch["stage"] = "contacted"
+            await update_by_id("leads", call["lead_id"], lead_patch)
+            await events.record(
+                call["lead_id"],
+                "call_ended",
+                f"{payload.call_status}, {len(messages)} exchanges"
+                + (f", score {payload.score}" if payload.score is not None else ""),
+                data={"call_id": payload.call_id, "status": payload.call_status},
+            )
 
     logger.info(
         "Stored %d turn(s) for call %s%s",

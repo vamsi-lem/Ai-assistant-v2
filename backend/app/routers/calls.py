@@ -1,20 +1,25 @@
 """
-Call status for the frontend, and call context for the agent.
+Calls: status for the form page, context for the agent, lists and
+transcripts for the dashboard.
 
-Two audiences, two levels of trust. The status endpoint is public and returns
-only what a progress indicator needs. The context endpoint is agent-only and
-returns the lead's name and number, so it is behind the shared-secret guard.
+Three audiences, three levels of trust. The status endpoint is public and
+returns only what a progress indicator needs. The context endpoint is agent
+only and returns the lead's name and number, so it is behind the shared
+secret. The list and detail endpoints need a signed in user, and a
+counsellor sees only calls to leads assigned to them.
 """
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from ..db import find_one, get_by_id, update_by_id
+from ..auth import CurrentUser, require_user
+from ..db import db, execute, find_one, get_by_id, update_by_id
 from ..deps import require_agent_key
-from ..schemas import AgentCallContext, CallOut, CallStatusOut
+from ..schemas import AgentCallContext, CallDetailOut, CallOut, CallPage, CallStatusOut
+from ..services.scope import scope_leads
 from ..services.meetings import service as meetings
 from ..services.telephony import service as telephony
 from ..services.telephony.base import TelephonyNotConfigured
@@ -24,6 +29,50 @@ router = APIRouter(prefix="/api/calls", tags=["calls"])
 
 # Statuses that will never change again, so polling should stop.
 TERMINAL = {"completed", "failed", "no-answer", "busy"}
+
+
+# ---------------------------------------------------------------------------
+# Dashboard
+# ---------------------------------------------------------------------------
+
+
+@router.get("", response_model=CallPage)
+async def list_calls(
+    user: CurrentUser = Depends(require_user),
+    lead_id: str | None = Query(default=None),
+    call_status: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> CallPage:
+    query = db().table("call_overview").select("*", count="exact")
+    query = scope_leads(query, user, column="lead_assigned_to")
+    if lead_id:
+        query = query.eq("lead_id", lead_id)
+    if call_status:
+        query = query.eq("status", call_status)
+    query = query.order("created_at", desc=True).range(offset, offset + limit - 1)
+    try:
+        result = await execute(query)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Loading calls failed")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Loading calls failed: {exc}")
+    return CallPage(items=[CallDetailOut(**row) for row in (result.data or [])], total=result.count or 0)
+
+
+@router.get("/{call_id}", response_model=CallDetailOut)
+async def call_detail(call_id: str, user: CurrentUser = Depends(require_user)) -> CallDetailOut:
+    """One call with its full transcript."""
+    result = await execute(db().table("call_overview").select("*").eq("id", call_id).maybe_single())
+    row = result.data if result and result.data else None
+    if not row or (not user.sees_all_leads and row.get("lead_assigned_to") != user.id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Call not found.")
+    conversation = await find_one("conversations", "call_id", call_id)
+    return CallDetailOut(**row, transcript=(conversation or {}).get("messages") or [])
+
+
+# ---------------------------------------------------------------------------
+# Form page
+# ---------------------------------------------------------------------------
 
 
 @router.get("/{call_id}/status", response_model=CallStatusOut)

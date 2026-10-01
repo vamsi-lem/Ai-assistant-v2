@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 
 from ..config import get_settings
 from ..db import find_one, update_by_id
+from ..services import events
 from ..services.telephony import service as telephony
 from ..services.telephony.base import normalise_status
 
@@ -100,6 +101,10 @@ async def telephony_status(request: Request) -> dict:
     lead_status = LEAD_STATUS_FOR_CALL.get(new_status)
     if lead_status:
         await update_by_id("leads", call["lead_id"], {"status": lead_status})
+        await events.record(
+            call["lead_id"], "call_ended", f"{new_status} (carrier)",
+            data={"call_id": call["id"], "status": new_status},
+        )
 
     logger.info("Call %s -> %s (carrier said '%s')", call["id"], new_status, raw_status)
     return {"received": True, "matched": True, "status": new_status}

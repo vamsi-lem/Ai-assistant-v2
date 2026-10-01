@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .db import init_db
-from .routers import bookings, calls, conversations, health, leads, webhooks
+from .routers import bookings, calls, conversations, dashboard, health, leads, settings as settings_router, team, webhooks
 from .services.telephony import service as telephony
 
 logging.basicConfig(
@@ -43,6 +43,11 @@ async def lifespan(app: FastAPI):
     logger.info("Webhooks         %s", settings.describe_webhooks())
     logger.info("Agent auth       %s", "configured" if settings.agent_api_key else "NOT CONFIGURED")
     logger.info("Bookings         %s", settings.describe_bookings())
+    logger.info(
+        "Dashboard auth   Supabase Auth, %s; invites land on %s/set-password",
+        "legacy HS256 secret set" if settings.supabase_jwt_secret else "public signing key (JWKS)",
+        settings.frontend_base_url,
+    )
     logger.info("CORS allowed     %s", ", ".join(settings.cors_origins))
     logger.info(
         "Form brakes      %s per address per hour, %s minute gap per number",
@@ -78,10 +83,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_settings.cors_origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    # X-Agent-Key is listed so a browser preflight does not reject it, though
-    # only the agent ever sends it.
-    allow_headers=["Content-Type", "X-Agent-Key", "X-Dashboard-Key"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    # Authorization carries the dashboard user's Supabase token. X-Agent-Key
+    # is listed so a browser preflight does not reject it, though only the
+    # agent ever sends it.
+    allow_headers=["Content-Type", "Authorization", "X-Agent-Key"],
 )
 
 app.include_router(health.router)
@@ -90,6 +96,9 @@ app.include_router(calls.router)
 app.include_router(conversations.router)
 app.include_router(webhooks.router)
 app.include_router(bookings.router)
+app.include_router(team.router)
+app.include_router(dashboard.router)
+app.include_router(settings_router.router)
 
 
 @app.get("/", include_in_schema=False)

@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Bima-inspired dark studio palette */
+  --bg: #08080b;
+  --bg-2: #0e0e13;
+  --panel: rgba(255, 255, 255, 0.035);
+  --panel-2: rgba(255, 255, 255, 0.055);
+  --line: rgba(255, 255, 255, 0.09);
+  --line-2: rgba(255, 255, 255, 0.16);
+  --ink: #f5f4f8;
+  --soft: #aca9b8;
+  --mut: #6c6a78;
+  --violet: #8b6bf0;
+  --violet-2: #b79cff;
+  --warm: #ff9e7a;
+  --glow-violet: rgba(139, 107, 240, 0.3);
+  --glow-warm: rgba(255, 158, 122, 0.14);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  background-image:
+    radial-gradient(80% 55% at 82% 6%, var(--glow-violet), transparent 60%),
+    radial-gradient(60% 40% at 12% 36%, var(--glow-warm), transparent 55%);
+  background-attachment: fixed;
+}
+
+/* Gradient text helper */
+.text-gradient {
+  background: linear-gradient(100deg, var(--violet-2) 10%, var(--warm) 90%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Thin, dark scrollbars to match the studio look */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 999px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}

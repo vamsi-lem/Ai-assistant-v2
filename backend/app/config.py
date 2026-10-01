@@ -54,7 +54,7 @@ class Settings:
     def __init__(self) -> None:
         self.env: str = _str("APP_ENV", "development")
         self.port: int = _int("PORT", 8000)
-        self.cors_origins: list[str] = _csv("CORS_ORIGINS", "http://localhost:5173")
+        self.cors_origins: list[str] = _csv("CORS_ORIGINS", "http://localhost:3000")
 
         # --- Supabase -------------------------------------------------------
         # The SECRET key, not the anon key. It bypasses row level security,
@@ -107,6 +107,17 @@ class Settings:
         self.booking_duration_minutes: int = _int("BOOKING_DURATION_MINUTES", 30)
         self.company_name: str = _str("COMPANY_NAME", "our team")
 
+        # Counsellor working hours on the 24 hour clock, and working days as
+        # ISO weekday numbers (1 Monday .. 7 Sunday). The Appointments page
+        # offers slots of BOOKING_DURATION_MINUTES inside these. Keep them in
+        # step with COUNSELLOR_WORK_START/END in agent/.env, which Maya uses
+        # to read "six" as 6 pm.
+        self.counsellor_work_start: int = _int("COUNSELLOR_WORK_START", 10)
+        self.counsellor_work_end: int = _int("COUNSELLOR_WORK_END", 19)
+        self.counsellor_work_days: list[int] = [
+            int(d) for d in _csv("COUNSELLOR_WORK_DAYS", "1,2,3,4,5,6") if d.isdigit()
+        ] or [1, 2, 3, 4, 5, 6]
+
         # zoom | google | none. The DEFAULT platform: used when the lead has
         # no preference ("anything is fine"). Any other platform whose
         # credentials are filled in below is also available, and Maya offers
@@ -133,8 +144,15 @@ class Settings:
         self.whatsapp_template_name: str = _str("WHATSAPP_TEMPLATE_NAME", "booking_confirmation")
         self.whatsapp_template_language: str = _str("WHATSAPP_TEMPLATE_LANGUAGE", "en")
 
-        # The counsellor dashboard is behind this. Generate like AGENT_API_KEY.
-        self.dashboard_key: str = _str("DASHBOARD_KEY")
+        # --- Dashboard sign in ---------------------------------------------
+        # Dashboard users sign in with Supabase Auth; the backend verifies
+        # their token against Supabase's public signing key (app/auth.py).
+        # Only projects that still sign with the legacy shared secret need
+        # SUPABASE_JWT_SECRET; leave it blank otherwise.
+        self.supabase_jwt_secret: str = _str("SUPABASE_JWT_SECRET")
+        # Where invitation and password reset links should land. Defaults to
+        # the first CORS origin, which is the dashboard's own address.
+        self.frontend_base_url: str = _str("FRONTEND_BASE_URL", self.cors_origins[0] if self.cors_origins else "http://localhost:3000").rstrip("/")
 
         # --- Compliance -----------------------------------------------------
         # When on, a number on the do-not-call list is never dialled unless the
@@ -235,8 +253,7 @@ class Settings:
             if self.whatsapp_provider != "none"
             else "no WhatsApp (WHATSAPP_PROVIDER=none)"
         )
-        dash = "dashboard key set" if self.dashboard_key else "DASHBOARD_KEY unset, dashboard disabled"
-        return f"{meeting}; {whatsapp}; {dash}"
+        return f"{meeting}; {whatsapp}"
 
     # -- human readable status, printed at boot ------------------------------
 

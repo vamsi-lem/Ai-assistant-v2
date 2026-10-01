@@ -10,7 +10,8 @@ backend:
   2. creates a Zoom or Google Meet link         (if MEETING_PROVIDER is set)
   3. sends the link to the lead on WhatsApp     (if WHATSAPP_PROVIDER is set)
 Maya: "Booked for Tuesday, 22 September at 6 pm. The link is on your WhatsApp."
-counsellor: sees it at /#/counsellor with the link and the WhatsApp status
+counsellor: sees it on the lead page and under Appointments, with the link
+            and the WhatsApp status
 ```
 
 Steps 2 and 3 are each optional and each can fail without losing the
@@ -23,15 +24,13 @@ in Supabase -> SQL Editor once.
 ## Stage 1: booking only (no accounts needed)
 
 ```
-DASHBOARD_KEY=<generate: python -c "import secrets; print(secrets.token_urlsafe(24))">
 MEETING_PROVIDER=none
 WHATSAPP_PROVIDER=none
 ```
 
-Restart, make a call, agree a time. Open the form page, click "Counsellor
-dashboard" at the bottom, enter the key. The booking is there, marked "no
-link" and "WhatsApp skipped". That proves the time was understood and saved.
-Do this first.
+Restart, make a call, agree a time. Sign in to the dashboard and open the
+lead. The booking is there, marked "no link" and "WhatsApp skipped". That
+proves the time was understood and saved. Do this first.
 
 ## Stage 2: meeting links
 

@@ -68,7 +68,7 @@ builds it from that file.
    and shows one service, `lg-maya-backend`, region Singapore, plan Free.
 3. It asks for every value marked `sync: false`. Paste them from your local
    `backend\.env`, with two exceptions:
-   - `CORS_ORIGINS`: enter `http://localhost:5173` for now. The Vercel
+   - `CORS_ORIGINS`: enter `http://localhost:3000` for now. The Vercel
      address is added in step 4.
    - Anything you do not use (for example the Zoom values if you only use
      Google Meet): leave blank.
@@ -171,13 +171,20 @@ a different `AGENT_ROOM_PREFIX` locally.
 1. vercel.com, sign in with GitHub, **Add New** > **Project**, import the
    repository.
 2. **Root Directory**: Edit, choose `frontend`.
-3. Framework preset auto detects **Vite**. Build command `npm run build`,
-   output `dist`. Leave as detected.
-4. **Environment Variables**, one entry:
+3. Framework preset auto detects **Next.js**. Leave the build settings as
+   detected.
+4. **Environment Variables**, three entries, all of type plain (not Secret;
+   Vercel refuses the Secret type for `NEXT_PUBLIC_` names):
 
    ```
-   VITE_API_BASE_URL=https://lg-maya-backend.onrender.com/api
+   NEXT_PUBLIC_API_BASE_URL=https://lg-maya-backend.onrender.com/api
+   NEXT_PUBLIC_SUPABASE_URL=https://<your project>.supabase.co
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon public key from Supabase>
    ```
+
+   Then in Supabase, Authentication > URL Configuration: set **Site URL** to
+   the Vercel address and add `https://<vercel address>/set-password` to
+   **Redirect URLs**, so invitation and reset links open the live app.
 
 5. **Deploy**. Two minutes. Copy the address Vercel gives you, like
    `https://ai-voice-platform-v2.vercel.app`.
@@ -190,7 +197,7 @@ Render dashboard > `lg-maya-backend` > **Environment** > edit
 `CORS_ORIGINS`:
 
 ```
-http://localhost:5173,https://ai-voice-platform-v2.vercel.app
+http://localhost:3000,https://ai-voice-platform-v2.vercel.app
 ```
 
 No spaces after the comma, no trailing slash. Save; Render redeploys.
@@ -206,10 +213,10 @@ Open the Vercel address on your phone over mobile data. Different network,
 different device, nothing local involved.
 
 - Footer says backend ok, db connected.
-- Submit the form. Your phone rings within a few seconds.
+- Open `/form` on the Vercel address. Submit it. Your phone rings within a few seconds.
 - Maya greets you by name, asks the language, books a slot.
 - The WhatsApp with the Google Meet or Zoom link arrives.
-- Dashboard (`/#/counsellor` on the Vercel address, with `DASHBOARD_KEY`)
+- Dashboard (sign in on the Vercel address)
   shows the booking.
 - Submit the form again with the same number: the page says the number was
   called minutes ago and no second call is placed. That is the cooldown
@@ -226,6 +233,7 @@ Render **Logs** tab in the browser.
 |---|---|
 | Code in `backend/` | `git push`; Render redeploys on its own |
 | Code in `frontend/` | `git push`; Vercel redeploys on its own |
+| Frontend env value | Vercel > Settings > Environment Variables > edit, then Deployments > Redeploy |
 | Code in `agent/` | `cd agent; lk agent deploy` |
 | Backend env value | Render > Environment > edit > Save |
 | Agent env value | edit `.env.production.local`, then `lk agent update-secrets --secrets-file .env.production.local` |
@@ -271,7 +279,7 @@ monthly minute caps beyond what you pay for. `backend/fly.toml` and
    `BACKEND_BASE_URL` pointing at the Fly backend, `fly deploy`. Then
    remove the hosted one (`lk agent delete`, see `lk agent --help`) so only
    one agent answers.
-4. Vercel: change `VITE_API_BASE_URL` to the Fly backend and redeploy.
+4. Vercel: change `NEXT_PUBLIC_API_BASE_URL` to the Fly backend and redeploy.
 5. Render: delete the service, and the cron-job.org ping.
 
 The rest of the hardening list applies at the same time: paid Gemini with
