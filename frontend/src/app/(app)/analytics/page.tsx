@@ -1,28 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
 import { Card, Eyebrow } from "@/components/ui/Card";
 import { Spinner, ErrorCard, Empty } from "@/components/ui/State";
 import { useRole } from "@/components/providers/RoleProvider";
 import { getAnalytics } from "@/lib/api/dashboard";
-import { ApiError } from "@/lib/api/client";
-import type { AnalyticsSummary } from "@/lib/types";
+import { useCached } from "@/lib/hooks/useCached";
 import { callStatusLabel, sourceLabel, stageLabel } from "@/lib/labels";
 
 export default function AnalyticsPage() {
   const { can } = useRole();
   const scopedAll = can("leads:viewAll");
-  const [a, setA] = useState<AnalyticsSummary | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(() => {
-    setError(null);
-    getAnalytics()
-      .then(setA)
-      .catch((err) => setError(err instanceof ApiError ? err.message : "Could not load analytics."));
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
+  const { data: a, error, loading, reload: load } = useCached("analytics", getAnalytics, "Could not load analytics.");
 
   const funnelMax = Math.max(1, ...(a?.funnel.map((f) => f.n) ?? [1]));
   const sourceTotal = Math.max(1, a?.total ?? 1);
@@ -37,7 +25,7 @@ export default function AnalyticsPage() {
       </div>
 
       {error && <ErrorCard message={error} onRetry={load} />}
-      {!a && !error && <Spinner />}
+      {loading && !error && <Spinner />}
       {a && a.total === 0 && <Empty>No leads yet. Analytics appear once the first lead arrives.</Empty>}
 
       {a && a.total > 0 && (

@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from . import auth
 from .config import get_settings
 from .db import init_db
 from .routers import bookings, calls, conversations, dashboard, health, leads, settings as settings_router, team, webhooks
@@ -49,6 +50,7 @@ async def lifespan(app: FastAPI):
         settings.frontend_base_url,
     )
     logger.info("CORS allowed     %s", ", ".join(settings.cors_origins))
+    await auth.warm_up()
     logger.info(
         "Form brakes      %s per address per hour, %s minute gap per number",
         settings.lead_max_per_ip_per_hour or "unlimited",

@@ -26,21 +26,27 @@ function Login() {
   const [info, setInfo] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<"signin" | "reset">("signin");
+  // The form stays hidden until we know nobody is signed in, so a signed in
+  // person goes straight to the dashboard without seeing it flash past.
+  const [checked, setChecked] = useState(false);
 
   // Already signed in (for example after a refresh): straight to the dashboard.
   // Arriving with ?reason= means the backend rejected the last session; show why.
   useEffect(() => {
     if (!authConfigured()) {
       setError(AUTH_NOT_CONFIGURED);
+      setChecked(true);
       return;
     }
     const reason = params.get("reason");
     if (reason) {
       setError(`Signed out by the backend: ${reason}`);
+      setChecked(true);
       return;
     }
     hasSession().then((yes) => {
       if (yes) router.replace("/dashboard");
+      else setChecked(true);
     });
   }, [router, params]);
 
@@ -67,6 +73,14 @@ function Login() {
     // A full page load, not a client side hop, so the dashboard starts from
     // nothing and loads this person's profile and leads fresh.
     window.location.assign("/dashboard");
+  }
+
+  if (!checked) {
+    return (
+      <main className="grid min-h-screen place-items-center">
+        <span className="h-6 w-6 animate-spin rounded-full border-2 border-line border-t-violet-2" />
+      </main>
+    );
   }
 
   return (

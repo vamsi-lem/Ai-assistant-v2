@@ -1,11 +1,12 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { can as canFn, roleLabel, type Permission } from "@/lib/rbac";
 import { getMe } from "@/lib/api/team";
 import { ApiError } from "@/lib/api/client";
 import { signOutToLogin } from "@/lib/api/session";
+import { readCache, writeCache } from "@/lib/cache";
+import { useSessionUserId } from "@/components/providers/AuthGuard";
 import type { Profile, Role } from "@/lib/types";
 
 interface RoleCtx {
@@ -21,22 +22,30 @@ const Ctx = createContext<RoleCtx>(null as unknown as RoleCtx);
 /**
  * Who is signed in, according to the backend. The role comes from the
  * profiles table, never from the browser, so a user cannot promote themselves.
+ *
+ * The profile from the last visit is painted first so the sidebar and the
+ * page appear at once; the backend's answer replaces it a moment later. The
+ * backend still checks the real role on every request, so a stale cached
+ * role can only ever show a menu item, never unlock data.
  */
 export function RoleProvider({ children }: { children: React.ReactNode }) {
-  const router = useRouter();
-  const [profile, setProfile] = useState<Profile | null>(null);
+  const userId = useSessionUserId();
+  const [profile, setProfile] = useState<Profile | null>(() => readCache<Profile>(userId, "me"));
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     getMe()
-      .then(setProfile)
+      .then((me) => {
+        setProfile(me);
+        writeCache(userId, "me", me);
+      })
       .catch((err: unknown) => {
         // 401 is handled inside the API client (sign out, back to /login with
         // the reason). Everything else, including 403, is shown here.
         if (err instanceof ApiError && err.status === 401) return;
         setError(err instanceof Error ? err.message : "Could not load your profile.");
       });
-  }, [router]);
+  }, [userId]);
 
   async function backToLogin() {
     await signOutToLogin();

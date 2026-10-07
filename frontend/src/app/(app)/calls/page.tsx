@@ -7,6 +7,7 @@ import { Spinner, ErrorCard, Empty } from "@/components/ui/State";
 import { LiquidOrb } from "@/components/visuals/LiquidOrb";
 import { getCall, listCalls } from "@/lib/api/calls";
 import { ApiError } from "@/lib/api/client";
+import { useCached } from "@/lib/hooks/useCached";
 import type { Call, CallDetail } from "@/lib/types";
 import { callStatusLabel } from "@/lib/labels";
 import { fmtDuration, fmtTime, relative } from "@/lib/format";
@@ -21,24 +22,14 @@ const FILTERS = [
 ];
 
 export default function CallsPage() {
-  const [calls, setCalls] = useState<Call[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [activeId, setActiveId] = useState("");
   const [detail, setDetail] = useState<CallDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
 
-  const load = useCallback(() => {
-    setError(null);
-    listCalls({ status: filter || undefined })
-      .then((p) => setCalls(p.items))
-      .catch((err) => setError(err instanceof ApiError ? err.message : "Could not load calls."));
-  }, [filter]);
-
-  useEffect(() => {
-    setCalls(null);
-    load();
-  }, [load]);
+  // One cache entry per filter; the last list paints at once, then refreshes.
+  const fetchCalls = useCallback(async (): Promise<Call[]> => (await listCalls({ status: filter || undefined })).items, [filter]);
+  const { data: calls, error, loading, reload: load } = useCached(`calls:${filter || "all"}`, fetchCalls, "Could not load calls.");
 
   const active = calls?.find((c) => c.id === activeId) ?? calls?.[0];
 
@@ -71,7 +62,7 @@ export default function CallsPage() {
       </div>
 
       {error && <ErrorCard message={error} onRetry={load} />}
-      {calls === null && !error && <Spinner />}
+      {loading && !error && <Spinner />}
       {calls?.length === 0 && <Empty>No calls yet. Submit the lead form and Maya will place the first one.</Empty>}
 
       {calls && calls.length > 0 && (

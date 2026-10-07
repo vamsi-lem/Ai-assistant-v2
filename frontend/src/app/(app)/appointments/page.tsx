@@ -11,6 +11,7 @@ import { useLeads } from "@/components/providers/LeadsProvider";
 import { useToast } from "@/components/providers/ToastProvider";
 import { createBooking, getAvailability, listBookings } from "@/lib/api/bookings";
 import { ApiError } from "@/lib/api/client";
+import { useCached } from "@/lib/hooks/useCached";
 import type { Availability, Booking } from "@/lib/types";
 import { dayLabel, fmtTime, initials, isoDay } from "@/lib/format";
 import { cn } from "@/lib/utils/cn";
@@ -60,21 +61,13 @@ function Appointments() {
   const [slot, setSlot] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmed, setConfirmed] = useState<Booking | null>(null);
-  const [upcoming, setUpcoming] = useState<Booking[] | null>(null);
-  const [upcomingError, setUpcomingError] = useState<string | null>(null);
+  const fetchUpcoming = useCallback(() => listBookings(0, 30), []);
+  const { data: upcoming, loading: upcomingLoading, error: upcomingError, reload: loadUpcoming } = useCached("bookings:upcoming", fetchUpcoming, "Could not load bookings.");
 
   const activeCounsellorId = counsellorId || counsellors[0]?.id || "";
   const activeLeadId = leadId || leads[0]?.id || "";
   const counsellor = counsellors.find((c) => c.id === activeCounsellorId);
   const lead = leads.find((l) => l.id === activeLeadId);
-
-  const loadUpcoming = useCallback(() => {
-    listBookings(0, 30)
-      .then((rows) => { setUpcoming(rows); setUpcomingError(null); })
-      .catch((err) => setUpcomingError(err instanceof ApiError ? err.message : "Could not load bookings."));
-  }, []);
-
-  useEffect(() => { loadUpcoming(); }, [loadUpcoming]);
 
   // Real availability whenever the counsellor or the day changes.
   useEffect(() => {
@@ -224,7 +217,7 @@ function Appointments() {
           <p className="text-[12px] text-mut">Every booked session in the next 30 days, by Maya or by the team.</p>
         </div>
         {upcomingError && <div className="px-5 pb-5"><ErrorCard message={upcomingError} onRetry={loadUpcoming} /></div>}
-        {upcoming === null && !upcomingError && <Spinner className="min-h-[100px]" />}
+        {upcomingLoading && !upcomingError && <Spinner className="min-h-[100px]" />}
         {upcoming && (
           <div className="overflow-x-auto">
             <table className="w-full text-[13px]">

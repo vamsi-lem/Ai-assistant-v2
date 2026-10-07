@@ -1,8 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { authConfigured, currentUserId, onAuthChange } from "@/lib/api/session";
+
+const SessionCtx = createContext<string>("");
+
+/** The signed in user's id (from the token, before the profile has loaded). */
+export const useSessionUserId = () => useContext(SessionCtx);
 
 /**
  * Bounces to /login when nobody is signed in.
@@ -14,8 +19,8 @@ import { authConfigured, currentUserId, onAuthChange } from "@/lib/api/session";
  */
 export function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const [ok, setOk] = useState(false);
-  const userId = useRef<string | null>(null);
+  const [userId, setUserId] = useState<string>("");
+  const known = useRef<string | null>(null);
 
   useEffect(() => {
     if (!authConfigured()) {
@@ -24,8 +29,8 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     }
     currentUserId().then((id) => {
       if (id) {
-        userId.current = id;
-        setOk(true);
+        known.current = id;
+        setUserId(id);
       } else {
         router.replace("/login");
       }
@@ -33,20 +38,20 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     return onAuthChange((id) => {
       if (!id) {
         router.replace("/login");
-      } else if (userId.current && id !== userId.current) {
+      } else if (known.current && id !== known.current) {
         window.location.reload();
       } else {
-        userId.current = id;
+        known.current = id;
       }
     });
   }, [router]);
 
-  if (!ok) {
+  if (!userId) {
     return (
       <div className="grid min-h-screen place-items-center">
         <span className="h-6 w-6 animate-spin rounded-full border-2 border-line border-t-violet-2" />
       </div>
     );
   }
-  return <>{children}</>;
+  return <SessionCtx.Provider value={userId}>{children}</SessionCtx.Provider>;
 }

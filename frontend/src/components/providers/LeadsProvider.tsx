@@ -5,7 +5,14 @@ import { useToast } from "@/components/providers/ToastProvider";
 import * as api from "@/lib/api/leads";
 import { listCounsellors } from "@/lib/api/team";
 import { ApiError } from "@/lib/api/client";
+import { readCache, writeCache } from "@/lib/cache";
+import { useSessionUserId } from "@/components/providers/AuthGuard";
 import type { Lead, Profile, Stage } from "@/lib/types";
+
+interface LeadsSnapshot {
+  leads: Lead[];
+  counsellors: Profile[];
+}
 
 interface LeadsCtx {
   leads: Lead[];
@@ -26,9 +33,12 @@ const Ctx = createContext<LeadsCtx>(null as unknown as LeadsCtx);
  */
 export function LeadsProvider({ children }: { children: React.ReactNode }) {
   const toast = useToast();
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [counsellors, setCounsellors] = useState<Profile[]>([]);
-  const [loading, setLoading] = useState(true);
+  const userId = useSessionUserId();
+  // Last visit's board paints at once; the backend's answer replaces it.
+  const [snapshot] = useState(() => readCache<LeadsSnapshot>(userId, "leads"));
+  const [leads, setLeads] = useState<Lead[]>(snapshot?.leads ?? []);
+  const [counsellors, setCounsellors] = useState<Profile[]>(snapshot?.counsellors ?? []);
+  const [loading, setLoading] = useState(snapshot === null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -37,12 +47,13 @@ export function LeadsProvider({ children }: { children: React.ReactNode }) {
       setLeads(page.items);
       setCounsellors(team);
       setError(null);
+      writeCache<LeadsSnapshot>(userId, "leads", { leads: page.items, counsellors: team });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not load leads.");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [userId]);
 
   useEffect(() => {
     refresh();

@@ -11,6 +11,7 @@
  */
 
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
+import { clearCache } from "@/lib/cache";
 
 const URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
@@ -65,6 +66,7 @@ export async function signIn(email: string, password: string): Promise<string | 
  * local sign out, and as a last resort clear the stored keys by hand.
  */
 export async function signOut(): Promise<void> {
+  clearCache();
   if (!authConfigured()) return;
   try {
     const { error } = await supabase().auth.signOut({ scope: "global" });

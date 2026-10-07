@@ -1,6 +1,5 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Phone, CalendarPlus, Video } from "lucide-react";
 import { Card, Eyebrow } from "@/components/ui/Card";
@@ -8,26 +7,15 @@ import { Spinner, ErrorCard } from "@/components/ui/State";
 import { ScoreChip } from "@/components/leads/ScoreChip";
 import { useRole } from "@/components/providers/RoleProvider";
 import { getDashboard } from "@/lib/api/dashboard";
-import { ApiError } from "@/lib/api/client";
-import type { DashboardSummary, Lead } from "@/lib/types";
+import { useCached } from "@/lib/hooks/useCached";
+import type { Lead } from "@/lib/types";
 import { leadStatusLabel, languageLabel, sourceLabel, TEMP_DOT, temperature } from "@/lib/labels";
 import { fmtTime, relative } from "@/lib/format";
 
 export default function DashboardPage() {
   const { user } = useRole();
-  const [data, setData] = useState<DashboardSummary | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(() => {
-    setError(null);
-    getDashboard()
-      .then(setData)
-      .catch((err) => setError(err instanceof ApiError ? err.message : "Could not load the dashboard."));
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  // Last visit's numbers paint at once; the backend's answer replaces them.
+  const { data, error, loading, reload: load } = useCached("dashboard", getDashboard, "Could not load the dashboard.");
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
@@ -44,7 +32,7 @@ export default function DashboardPage() {
       </div>
 
       {error && <ErrorCard message={error} onRetry={load} />}
-      {!data && !error && <Spinner />}
+      {loading && !error && <Spinner />}
 
       {data && (
         <>

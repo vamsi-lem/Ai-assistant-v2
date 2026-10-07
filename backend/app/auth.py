@@ -95,14 +95,51 @@ async def _fetch_jwks() -> PyJWKSet:
     raise last
 
 
-async def _get_jwks(force: bool = False) -> PyJWKSet:
+_jwks_refresh: asyncio.Task | None = None
+
+
+async def _refresh_jwks_quietly() -> None:
+    """Background refresh. A failure keeps the old keys; the next request tries again."""
     global _jwks_cache
+    try:
+        jwks = await _fetch_jwks()
+        _jwks_cache = (time.monotonic() + _JWKS_TTL, jwks)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Background JWKS refresh failed (%s); keeping the previous keys", type(exc).__name__)
+
+
+async def _get_jwks(force: bool = False) -> PyJWKSet:
+    """
+    The signing keys, without making a request wait for Supabase.
+
+    Fresh in cache: return at once. Past its hour but present: return the
+    old copy now and refresh behind the scenes (keys change rarely, and a
+    rotated key is caught by the `force` retry in `_decode`). Nothing cached
+    at all, which only happens before the startup warm up finishes: fetch.
+    """
+    global _jwks_cache, _jwks_refresh
+    if not force and _jwks_cache:
+        if _jwks_cache[0] <= time.monotonic() and (_jwks_refresh is None or _jwks_refresh.done()):
+            _jwks_refresh = asyncio.create_task(_refresh_jwks_quietly())
+        return _jwks_cache[1]
     async with _jwks_lock:
-        if not force and _jwks_cache and _jwks_cache[0] > time.monotonic():
+        if not force and _jwks_cache:
             return _jwks_cache[1]
         jwks = await _fetch_jwks()
         _jwks_cache = (time.monotonic() + _JWKS_TTL, jwks)
         return jwks
+
+
+async def warm_up() -> None:
+    """Fetch the signing keys once at startup so the first sign in does not pay for it."""
+    settings = get_settings()
+    if settings.supabase_jwt_secret:
+        return  # HS256 projects verify with the shared secret; no keys to fetch
+    try:
+        await _get_jwks()
+        logger.info("Supabase signing keys loaded")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not load Supabase signing keys at startup (%s); will retry on the first sign in", type(exc).__name__)
 
 
 def _key_for(jwks: PyJWKSet, kid: str | None) -> Any | None:
